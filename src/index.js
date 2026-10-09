@@ -74,12 +74,13 @@ const ADMIN_PAGE = `<!doctype html>
     <p class="meta" style="margin:0 0 14px">输入管理密钥进入。密钥只存在这台设备的浏览器里，不会出现在地址栏。</p>
     <input id="lkey" type="password" placeholder="管理密钥" autocomplete="current-password" style="width:100%;background:#151a24;border:1px solid #232a3a;color:#e8eaed;border-radius:10px;padding:12px;font:inherit">
     <label style="display:flex;gap:8px;align-items:center;margin:12px 0 14px;font-size:13px">
-      <input type="checkbox" id="lremember" checked style="width:18px;height:18px;accent-color:#2b5cff"> 在这台设备上记住
+      <input type="checkbox" id="lremember" style="width:18px;height:18px;accent-color:#2b5cff"> 在这台设备上记住（公用电脑别勾）
     </label>
     <button id="lgo" class="p" style="width:100%">进入</button>
     <div id="lerr" style="color:#ffb4c0;font-size:13px;margin-top:10px;min-height:18px"></div>
   </div>
 </div>
+<div id="panel" style="display:none">
 <h1>匿名聊天 · 管理
   <button id="chkey" style="margin-left:auto;font-size:12px;padding:6px 10px;min-height:34px">退出</button>
   <button id="rf">刷新</button></h1>
@@ -121,6 +122,7 @@ var K = (function () {
 })();
 function showLogin(msg) {
   var el = document.getElementById('login');
+  try { document.getElementById('panel').style.display = 'none'; } catch (e) {}   // 未登录：管理界面整块不显示
   el.classList.add('on');
   document.getElementById('lerr').textContent = msg || '';
   setTimeout(function(){ try { document.getElementById('lkey').focus(); } catch (e) {} }, 60);
@@ -135,7 +137,9 @@ function askKey() { showLogin(''); }
     K = v;
     api('data?limit=1').then(function(){ 
       try { if (document.getElementById('lremember').checked) localStorage.setItem('anonchat:adminkey', v); else localStorage.removeItem('anonchat:adminkey'); } catch (e) {}
-      document.getElementById('lerr').textContent = ''; hideLogin(); load();
+      document.getElementById('lerr').textContent = ''; hideLogin();
+      try { document.getElementById('panel').style.display = ''; } catch (e) {}
+      load();
     }).catch(function(){ err.textContent = '密钥不对'; K = ''; });
   }
   document.getElementById('lgo').onclick = submit;
@@ -154,6 +158,7 @@ async function load(){
     K = ''; showLogin('密钥无效或已失效，请重新输入'); return;
   }
   if (my !== SEQ) return;
+  try { document.getElementById('panel').style.display = ''; } catch (e) {}
   document.getElementById('kv').innerHTML =
       '<div><b>' + d.hall + '</b><span>大厅在线</span></div>'
     + '<div><b>' + d.queue + '</b><span>1v1 排队</span></div>'
@@ -311,9 +316,10 @@ document.getElementById('onlynew').addEventListener('change', function(){ OFFSET
 })();
 document.getElementById('rf').onclick = function(){ load(); };
 document.getElementById('chkey').onclick = function(){ K = ''; try { localStorage.removeItem('anonchat:adminkey'); } catch (e) {} showLogin('已退出，请重新输入密钥'); };
-if (!K) showLogin(''); else load();
+if (!K) showLogin(''); else load();   // 有 key 也要先用它成功取一次数据，才显示管理界面（校验不过会自动退回登录卡）
 document.getElementById('reset').onclick = async function(){ if (confirm('确定踢掉所有连接？')) { var r = await api('reset'); say('已清场，踢掉 ' + r.kicked + ' 人'); load(); } };
 document.getElementById('clr').onclick = async function(){ if (confirm('确定清空所有举报记录？')) { var r = await api('clearreports'); say('已清空 ' + r.deleted + ' 条'); load(); } };
+</div><!-- /#panel -->
 load();
 </script>
 </body></html>`;
@@ -1206,7 +1212,7 @@ export class Lobby3 {
       const bl = await this.dbList({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-2210', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261009-2225', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000),
         reports: page, reports_total: filtered.length, reports_all: arr.length, offset: off, limit: lim, q,
         bans,
