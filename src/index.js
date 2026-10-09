@@ -96,6 +96,7 @@ async function load(){
       +  (r.mode === 'group' ? '<span class="tag">举报者 #' + esc(r.reporter_tag || '-') + '</span>' : '') + '</div>'
       +  '<div class="meta">举报者 IP 哈希 ' + esc(String(r.reporter_ip_hash || '').slice(0, 20)) + '…'
       +  ' · 被举报 IP 哈希 ' + esc(String(r.reported_ip_hash || '').slice(0, 20)) + '…</div>'
+      +  (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：陌生人 ' + esc(r.reported_msg.tag || '?') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : '')
       +  (r.room_staff && r.room_staff.length ? '<div class="meta">当时在场：' + r.room_staff.map(function(s){ return '#' + s.tag; }).join(' ') + '</div>' : '')
       +  (lines ? '<pre>' + lines + '</pre>' : '')
       +  '<div class="row" style="margin-top:10px">'
@@ -253,10 +254,25 @@ $('#go').addEventListener('click', () => { $('#gate').style.display = 'none'; co
 
 function el(cls, txt){ const d=document.createElement('div'); d.className='m '+cls; if(txt!==undefined) d.textContent=txt; log.appendChild(d); log.scrollTop=1e9; return d; }
 function sys(t){ el('sys', t); }
-function msg(t, me, from){ const d = el(me?'me':'you'); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent='陌生人 '+from; d.appendChild(w); } d.appendChild(document.createTextNode(t)); return d; }
-function img(src, me, from){ const d = el(me?'me':'you',''); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent='陌生人 '+from; d.appendChild(w); }
+function attachReport(el, id){
+  if (!id) return;
+  el.dataset.id = id;
+  let timer = null;
+  const start = () => { clearTimeout(timer); timer = setTimeout(() => askReport(id), 600); };
+  const cancel = () => clearTimeout(timer);
+  el.addEventListener('touchstart', start, { passive: true });
+  el.addEventListener('touchend', cancel); el.addEventListener('touchmove', cancel);
+  el.addEventListener('mousedown', start); el.addEventListener('mouseup', cancel); el.addEventListener('mouseleave', cancel);
+  el.addEventListener('contextmenu', e => { e.preventDefault(); askReport(id); });
+}
+function askReport(id){
+  if (!inChat) return;
+  if (confirm('举报这条消息？管理员会看到这条内容和上下文。')) send({ t: 'report', id });
+}
+function msg(t, me, from, id){ const d = el(me?'me':'you'); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent='陌生人 '+from; d.appendChild(w); } d.appendChild(document.createTextNode(t)); attachReport(d, id); return d; }
+function img(src, me, from, id){ const d = el(me?'me':'you',''); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent='陌生人 '+from; d.appendChild(w); }
   const i = new Image(); i.src = src;
-  i.addEventListener('click', () => { $('#lbi').src = src; $('#lb').classList.add('on'); }); d.appendChild(i); return d; }
+  i.addEventListener('click', () => { $('#lbi').src = src; $('#lb').classList.add('on'); }); d.appendChild(i); attachReport(d, id); return d; }
 $('#lb').addEventListener('click', () => { $('#lb').classList.remove('on'); $('#lbi').src=''; });
 
 function setState(s){
@@ -284,14 +300,14 @@ function connect(){
     else if (m.t === 'matched') { sys('已配对 —— 打个招呼吧'); setState('聊天中'); }
     else if (m.t === 'room') { myTag = m.tag || 0; groupSize = m.n || 0; sys('已进入大厅，当前 ' + groupSize + ' 人（你是陌生人 ' + myTag + '）'); setState('群聊中'); }
     else if (m.t === 'roominfo') { groupSize = m.n || groupSize; stat.textContent = '群聊中 · ' + groupSize + ' 人'; }
-    else if (m.t === 'msg') { msg(m.v, false, m.from); }
-    else if (m.t === 'img') { img(m.v, false, m.from); }
+    else if (m.t === 'msg') { msg(m.v, false, m.from, m.id); }
+    else if (m.t === 'img') { img(m.v, false, m.from, m.id); }
     else if (m.t === 'history') {
       if (m.items && m.items.length) {
         sys('—— 以下是最近 3 天的聊天记录 ——');
         m.items.forEach(it => {
-          if (it.k === 'text') msg(it.v, false, it.from);
-          else if (it.k === 'img') img(it.v, false, it.from);
+          if (it.k === 'text') msg(it.v, false, it.from, it.id);
+          else if (it.k === 'img') img(it.v, false, it.from, it.id);
           else sys('陌生人 ' + it.from + '：[图片]');
         });
         sys('—— 以上是之前的聊天 ——');
@@ -307,14 +323,16 @@ function connect(){
 }
 function send(o){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); else sys('未连接'); }
 
+function newId(){ return 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 function sendText(){
   const v = input.value.trim(); if (!v) return;
-  input.value = ''; msg(v, true); send({t:'msg', v});
+  const id = newId();
+  input.value = ''; msg(v, true, 0, id); send({t:'msg', v, id});
 }
 $('#send').addEventListener('click', sendText);
 input.addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
 $('#next').addEventListener('click', () => { log.innerHTML=''; sys('换人中…'); send({t:'skip'}); setState(mode === 'group' ? '凑人中…' : '排队中'); });
-$('#rep').addEventListener('click', () => { if (inChat) send({t:'report'}); });
+$('#rep').addEventListener('click', () => { if (inChat && confirm('举报对方（不含具体哪条消息）？长按某条消息可以单独举报那一条。')) send({t:'report'}); });
 $('#pic').addEventListener('click', () => $('#file').click());
 
 // 选图 → 压缩到 ≤1280px / JPEG → 直传
@@ -325,7 +343,8 @@ $('#file').addEventListener('change', async e => {
   try {
     const d = await compress(f);
     if (d.length > 320000) { sys('图片太大，换一张小点的'); return; }
-    img(d, true); send({t:'img', v:d});
+    const id = newId();
+    img(d, true, 0, id); send({t:'img', v:d, id});
   } catch { sys('图片处理失败'); }
 });
 
@@ -603,7 +622,7 @@ export class Lobby {
     // 记入自己的留证缓冲
     conn.msgs.push(entry); if (conn.msgs.length > KEEP_MSGS) conn.msgs.shift();
     if (conn.room) {                       // 大厅：落盘记录 + 广播
-      this.saveHistory({ from: conn.tag, k: entry.k, v: out.v, at: entry.at });
+      this.saveHistory({ id: entry.id, from: conn.tag, k: entry.k, v: out.v, at: entry.at });
       this.hallBroadcast(Object.assign({ from: conn.tag }, out), conn);
     } else if (conn.peer) {               // 一对一：转发
       conn.peer.msgs.push(Object.assign({}, entry, { me: 0 }));
@@ -628,14 +647,15 @@ export class Lobby {
       else this.unpair(conn, true);
       return;
     }
-    if (m.t === 'report') { this.report(conn); return; }
+    if (m.t === 'report') { this.report(conn, String(m.id || '')); return; }
 
     if (m.t === 'msg') {
       if (!this.rate(conn, false)) { this.send(conn, { t: 'err', v: '发太快了，慢一点' }); return; }
       const v = String(m.v || '').slice(0, MAX_TEXT).trim();
       if (!v) return;
       if (BLOCK_WORDS.some(w => v.toLowerCase().includes(w))) { this.send(conn, { t: 'err', v: '这里不允许发链接' }); return; }
-      this.deliver(conn, { me: 1, k: 'text', tag: conn.tag, v, at: Date.now() }, { t: 'msg', v });
+      const id = String(m.id || '').slice(0, 40) || ('s' + Date.now().toString(36));
+      this.deliver(conn, { id, me: 1, k: 'text', tag: conn.tag, v, at: Date.now() }, { t: 'msg', v, id });
       return;
     }
 
@@ -644,12 +664,16 @@ export class Lobby {
       const v = String(m.v || '');
       if (!/^data:image\/(jpeg|png|webp|gif);base64,/.test(v)) { this.send(conn, { t: 'err', v: '图片格式不支持' }); return; }
       if (v.length > MAX_IMG_CHARS) { this.send(conn, { t: 'err', v: '图片太大' }); return; }
-      this.deliver(conn, { me: 1, k: 'img', tag: conn.tag, v: v.slice(0, 200) + '…(图，已省略)', at: Date.now() }, { t: 'img', v });
+      const imgId = String(m.id || '').slice(0, 40) || ('s' + Date.now().toString(36));
+      this.deliver(conn, { id: imgId, me: 1, k: 'img', tag: conn.tag, v: v.slice(0, 200) + '…(图，已省略)', at: Date.now() }, { t: 'img', v, id: imgId });
       return;
     }
   }
 
-  async report(conn) {
+  async report(conn, msgId) {
+    const msgs = conn.msgs || [];
+    const idx = msgId ? msgs.findIndex(x => x && x.id === msgId) : -1;
+    const target = idx >= 0 ? msgs[idx] : null;
     // 举报 = 只上报给管理员，不自动处置（不断开、不踢人、不退群）
     const peer = conn.peer, room = conn.room;
     const record = {
@@ -659,7 +683,9 @@ export class Lobby {
       reporter_tag: conn.tag || 0,
       reported_ip_hash: peer ? peer.iph : null,
       room_staff: room ? [...room.members].map(c => ({ tag: c.tag, iph: c.iph })) : [],
-      msgs: (conn.msgs || []).slice(-KEEP_MSGS),
+      reported_msg_id: msgId || null,
+      reported_msg: target ? { tag: target.tag || 0, k: target.k, v: String(target.v || '').slice(0, 500), at: target.at } : null,
+      msgs: idx >= 0 ? msgs.slice(Math.max(0, idx - 3), idx + 4) : msgs.slice(-KEEP_MSGS),
       handled: false,
     };
     try { await this.state.storage.put('report:' + Date.now() + ':' + Math.random().toString(36).slice(2, 8), record); } catch {}
