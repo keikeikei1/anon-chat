@@ -4,12 +4,8 @@ const WS_URL = process.env.WS_URL || 'wss://anon-chat.example.workers.dev/ws';
 const BASE = process.env.BASE || 'https://anon-chat.example.workers.dev';
 
 // 封禁闭环实测：先在脚本里造一条新举报（拿当前出口的真实 IP 哈希）→ 封 → 试连应被拒 → 解封 → 试连恢复
-import fs from 'fs';
-
-const ENV = '';
 const KEY = process.env.ADMIN_KEY || 'CHANGE_ME_random_admin_key';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-const BASE = BASE;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const jget = async p => { const r = await fetch(BASE + p, { headers: { 'User-Agent': UA } }); return { status: r.status, body: await r.text() }; };
 
