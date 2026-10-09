@@ -2,15 +2,16 @@
 //
 // 模式：
 //   * one   —— 一对一随机配对（文字 + 图片）
-//   * group —— 随机小群（凑够人就开一间，上限 8 人）
+//   * group —— 单一大厅（所有人一个群，软上限 HALL_MAX）
 //
 // 设计要点：
-//   * 单个全局 Lobby DO 管队列、配对、房间广播
-//   * 不落盘：消息只在内存里滚动保留最近若干条
+//   * 单个全局 Lobby DO 管队列、配对、大厅广播；无外部数据库
 //   * 图片走 WebSocket 直传（前端压到 ≤1280px / JPEG），服务器不存文件
-//   * 只有「举报」时才把该会话最近记录 + IP 哈希写进 storage（7 天内人工处置）
+//   * 落盘只有三样：举报快照（仅有人举报时）、封禁名单、聊天历史窗口（默认 3 天）
+//     后两者的过期清理靠 DO alarm；原始 IP 永不落库，只存加盐哈希
+//   * 举报 = 只上报，处置（踢出/封禁/清除内容/忽略）全由管理员在面板里点
 //   * 界面中文、手机优先（16px 输入防 iOS 缩放、safe-area、44px 触摸区）
-//   * 20 秒心跳 + 配对前剔除僵尸连接（断网/关页面后不会把新人配给死人）
+//   * 心跳 60 秒 + 4 分钟无动静判僵尸 + 客户端断线自动重连（不丢正在聊的会话）
 
 const MAX_TEXT = 500;
 const MAX_IMG_CHARS = 320000;      // data URL 上限（约 240 KB 图）
@@ -21,7 +22,7 @@ const HALL_MAX = 500;              // 大厅软上限（防单实例被压垮）
 const HISTORY_TTL_MS = 3 * 24 * 3600 * 1000;  // 聊天记录保留 3 天
 const HISTORY_LIMIT = 100;         // 新人进群一次最多补 100 条
 const HISTORY_IMG_MAX = 2;         // 历史里最多重发 2 张图，更早的显示 [图片]
-const STALE_MS = 300000;           // 超过这么久没动静视为僵尸（须 > 心跳间隔）
+const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须 > 心跳间隔）
 const BLOCK_WORDS = ['http://', 'https://', 'www.'];  // 挡外链，防广告/钓鱼
 
 async function sha256hex(s) {
@@ -66,6 +67,12 @@ const ADMIN_PAGE = `<!doctype html>
     <span id="msg" class="ok"></span>
   </div></div>
 <h2 id="rh">举报记录</h2>
+<div class="row" style="margin:-4px 0 10px">
+  <label style="margin:0;font-size:13px;display:flex;gap:8px;align-items:center">
+    <input type="checkbox" id="onlynew" style="width:18px;height:18px;accent-color:#2b5cff"> 只看未处理
+  </label>
+  <span class="meta" id="cnt2" style="margin:0"></span>
+</div>
 <div id="list"></div>
 <h2 id="bh">封禁列表</h2>
 <div id="bans"></div>
@@ -85,11 +92,14 @@ async function load(){
     + '<div><b>' + d.reports.length + '</b><span>举报记录</span></div>'
     + '<div><b>' + d.retention_days + '</b><span>记录保留（天）</span></div>'
     + '<div><b>' + ((d.bans || []).length) + '</b><span>封禁中</span></div>';
+  var onlyNew = document.getElementById('onlynew').checked;
+  var shown = onlyNew ? d.reports.filter(function(x){ return !x.handled; }) : d.reports;
   document.getElementById('rh').textContent = '举报记录（' + d.reports.length + '）';
+  document.getElementById('cnt2').textContent = onlyNew ? ('只看未处理：' + shown.length + ' 条') : '';
   var h = '';
-  if (!d.reports.length) h = '<div class="empty">暂无举报记录（平时不落盘，只有举报时才存）</div>';
-  for (var i = 0; i < d.reports.length; i++) {
-    var r = d.reports[i], lines = '';
+  if (!shown.length) h = '<div class="empty">' + (onlyNew ? '没有未处理的举报了 🎉' : '暂无举报记录（平时不落盘，只有举报时才存）') + '</div>';
+  for (var i = 0; i < shown.length; i++) {
+    var r = shown[i], lines = '';
     (r.msgs || []).forEach(function(m){ lines += (m.tag ? '陌生人' + m.tag : (m.me ? '我' : '对方')) + '：' + esc(String(m.v || '').slice(0, 400)) + String.fromCharCode(10); });
     h += '<div class="card rep ' + (r.handled ? 'done' : 'new') + '"><div class="row"><b>' + esc(r.at || '') + '</b>'
       +  '<span class="tag">' + esc(r.mode === 'group' ? '群聊' : '一对一') + '</span>'
@@ -99,12 +109,14 @@ async function load(){
       +  (r.content_cleared ? '<div class="meta">（聊天内容已清除）</div>' : '')
       +  (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：' + (r.reported_msg.tag ? ('陌生人 ' + esc(r.reported_msg.tag)) : '对方') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : '')
       +  (r.room_staff && r.room_staff.length ? '<div class="meta">当时在场：' + r.room_staff.map(function(s){ return '#' + s.tag; }).join(' ') + '</div>' : '')
+      +  '<div class="meta" id="ai-' + esc(r.key).replace(/[^a-zA-Z0-9]/g, '') + '"></div>'
       +  (lines ? '<pre>' + lines + '</pre>' : '')
       +  '<div class="row" style="margin-top:10px">'
       +    (r.reported_ip_hash ? '<button data-kick="' + esc(r.reported_ip_hash) + '">踢出（在线）</button>' : '')
       +    (r.reported_ip_hash ? '<button class="d" data-banh="' + esc(r.reported_ip_hash) + '" data-h="8" data-who="被举报方">封禁 8 小时</button>' : '')
       +    (r.reported_ip_hash ? '<button class="d" data-banh="' + esc(r.reported_ip_hash) + '" data-h="168" data-who="被举报方">封禁 7 天</button>' : '')
       +    (r.content_cleared ? '<span class="tag">聊天内容已清除</span>' : '<button data-clear="' + esc(r.key) + '">清除聊天内容</button>')
+      +    '<button data-ai="' + esc(r.key) + '">AI 审核</button>'
       +    (r.handled ? '<span class="tag">已忽略</span>' : '<button data-handled="' + esc(r.key) + '">忽略</button>')
       +  '</div>'
       +  '<div class="row" style="margin-top:8px">'
@@ -141,24 +153,26 @@ async function doClear(k){
   await api('clearmessages?k=' + encodeURIComponent(k));
   say('聊天内容已清除'); load();
 }
+async function doAI(k){
+  var box = document.getElementById('ai-' + k.replace(/[^a-zA-Z0-9]/g, ''));
+  if (box) box.textContent = 'AI 审核中…（几秒）';
+  try {
+    var r = await api('ai?k=' + encodeURIComponent(k));
+    if (!r.ok) { if (box) box.textContent = 'AI 审核失败：' + (r.error || '未知'); return; }
+    var p = r.parsed || {};
+    var line = 'AI：风险 ' + (p.risk || '?') + ' · ' + (p.category || '?') + ' · 建议 ' + (p.suggest || '?') + ' —— ' + (p.reason || r.verdict);
+    if (box) { box.style.color = (p.risk === 'high') ? '#ffb4c0' : (p.risk === 'medium' ? '#ffd479' : '#7ee787'); box.textContent = line; }
+  } catch (e) { if (box) box.textContent = 'AI 审核失败：' + e.message; }
+}
 async function doHandled(k){
   await api('handled?k=' + encodeURIComponent(k));
-  say('已标记为已处理'); load();
-}
-async function doBan(iph, who){
-  if (!confirm('确定封禁「' + who + '」的 IP 哈希 7 天？同一 WiFi / 同一出口后面的人会一起被封。')) return;
-  var r = await api('ban?iph=' + encodeURIComponent(iph) + '&days=7');
-  say('已封禁「' + who + '」，踢掉在线 ' + (r.kicked || 0) + ' 条连接'); load();
+  say('已忽略这条举报'); load();
 }
 async function doUnban(iph){
   if (!confirm('解除这条封禁？')) return;
   await api('unban?iph=' + encodeURIComponent(iph));
   say('已解封'); load();
 }
-document.getElementById('list').addEventListener('click', function(ev){
-  var b = ev.target.closest('button[data-ban]'); if (!b) return;
-  doBan(b.getAttribute('data-ban'), b.getAttribute('data-who'));
-});
 document.getElementById('list').addEventListener('click', function(ev){
   var k = ev.target.closest('button[data-kick]');
   if (k) { doKick(k.getAttribute('data-kick')); return; }
@@ -168,11 +182,14 @@ document.getElementById('list').addEventListener('click', function(ev){
   if (bh) { doBanH(bh.getAttribute('data-banh'), Number(bh.getAttribute('data-h')) || 168, bh.getAttribute('data-who')); return; }
   var cl = ev.target.closest('button[data-clear]');
   if (cl) { doClear(cl.getAttribute('data-clear')); return; }
+  var ai = ev.target.closest('button[data-ai]');
+  if (ai) { doAI(ai.getAttribute('data-ai')); return; }
 });
 document.getElementById('bans').addEventListener('click', function(ev){
   var b = ev.target.closest('button[data-unban]'); if (!b) return;
   doUnban(b.getAttribute('data-unban'));
 });
+document.getElementById('onlynew').addEventListener('change', load);
 document.getElementById('rf').onclick = load;
 document.getElementById('reset').onclick = async function(){ if (confirm('确定踢掉所有连接？')) { var r = await api('reset'); say('已清场，踢掉 ' + r.kicked + ' 人'); load(); } };
 document.getElementById('clr').onclick = async function(){ if (confirm('确定清空所有举报记录？')) { var r = await api('clearreports'); say('已清空 ' + r.deleted + ' 条'); load(); } };
@@ -273,10 +290,26 @@ const $ = s => document.querySelector(s);
 const log = $('#log'), stat = $('#stat'), input = $('#in');
 let ws = null, joined = false, inChat = false, mode = 'one', myTag = 0, groupSize = 0;
 
+// 上次来过且确认过年龄 → 刷新后直接回到聊天（换模式请点页面顶部的「换一个」或清站点数据）
+(function autoResume(){
+  let age = null, md = null;
+  try { age = localStorage.getItem('anonchat:age'); md = localStorage.getItem('anonchat:mode'); } catch (e) {}
+  if (age === '1') {
+    if (md === 'group') { mode = 'group'; $('#m-group').classList.add('on'); $('#m-one').classList.remove('on'); }
+    document.getElementById('ok').checked = true;
+    document.getElementById('go').disabled = false;
+    setTimeout(() => { document.getElementById('gate').style.display = 'none'; connect(); }, 30);
+  }
+})();
+
 $('#m-one').addEventListener('click', () => { mode = 'one'; $('#m-one').classList.add('on'); $('#m-group').classList.remove('on'); });
 $('#m-group').addEventListener('click', () => { mode = 'group'; $('#m-group').classList.add('on'); $('#m-one').classList.remove('on'); });
 $('#ok').addEventListener('change', e => { $('#go').disabled = !e.target.checked; });
-$('#go').addEventListener('click', () => { $('#gate').style.display = 'none'; connect(); });
+$('#go').addEventListener('click', () => {
+  $('#gate').style.display = 'none';
+  remember('age', '1'); remember('mode', mode);
+  connect();
+});
 
 function el(cls, txt){ const d=document.createElement('div'); d.className='m '+cls; if(txt!==undefined) d.textContent=txt; log.appendChild(d); log.scrollTop=1e9; return d; }
 function sys(t){ el('sys', t); }
@@ -313,26 +346,39 @@ function setState(s){
   inChat = on;
 }
 
-function startHeartbeat(){ clearInterval(window.__hb); window.__hb = setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({t:'ping'})); }, 180000); }
+function startHeartbeat(){ clearInterval(window.__hb); window.__hb = setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({t:'ping'})); }, 60000); }
+
+// 记住上次的模式与年龄确认：刷新后直接回到原来的位置，不用重走一遍
+function remember(k, v){ try { localStorage.setItem('anonchat:' + k, v); } catch (e) {} }
+function recall(k){ try { return localStorage.getItem('anonchat:' + k); } catch (e) { return null; } }
+
+let reconnectTry = 0, reconnectTimer = null, autoReconnect = true, loadTipEl = null;
 
 function connect(){
-  log.innerHTML = '';
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws');
   ws.onopen = () => {
+    reconnectTry = 0;
     joined = true; ws.send(JSON.stringify({t:'join', mode}));
     setState(mode === 'group' ? '凑人中…' : '排队中');
-    sys(mode === 'group' ? '正在凑人开一间群聊…' : '正在寻找陌生人…');
+    sys(mode === 'group' ? '正在进入大厅…' : '正在寻找陌生人…');
     startHeartbeat();
   };
   ws.onmessage = e => {
     let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.t === 'waiting') { sys(mode === 'group' ? '正在凑人开一间群聊…' : '正在寻找陌生人…'); setState(mode === 'group' ? '凑人中…' : '排队中'); }
     else if (m.t === 'matched') { sys('已配对 —— 打个招呼吧'); setState('聊天中'); }
-    else if (m.t === 'room') { myTag = m.tag || 0; groupSize = m.n || 0; sys('已进入大厅，当前 ' + groupSize + ' 人（你是陌生人 ' + myTag + '）'); setState('群聊中'); }
+    else if (m.t === 'room') {
+      myTag = m.tag || 0; groupSize = m.n || 0;
+      sys('已进入大厅，当前 ' + groupSize + ' 人（你是陌生人 ' + myTag + '）');
+      loadTipEl = el('sys', '正在加载最近的聊天记录…');
+      setState('群聊中');
+    }
     else if (m.t === 'roominfo') { groupSize = m.n || groupSize; stat.textContent = '群聊中 · ' + groupSize + ' 人'; }
     else if (m.t === 'msg') { msg(m.v, false, m.from, m.id); }
     else if (m.t === 'img') { img(m.v, false, m.from, m.id); }
     else if (m.t === 'history') {
+      if (loadTipEl) { try { loadTipEl.remove(); } catch (e) {} loadTipEl = null; }
       if (m.items && m.items.length) {
         sys('—— 以下是最近 3 天的聊天记录 ——');
         m.items.forEach(it => {
@@ -348,8 +394,16 @@ function connect(){
     else if (m.t === 'err') { sys(m.v); }
     else if (m.t === 'pong') {}
   };
-  ws.onclose = () => { joined = false; sys('连接已断开，刷新页面重连'); setState('离线'); };
-  ws.onerror = () => sys('网络异常');
+  ws.onclose = () => {
+    joined = false;
+    if (!autoReconnect) { setState('离线'); return; }
+    reconnectTry++;
+    const wait = Math.min(8000, 800 * Math.pow(1.7, Math.min(reconnectTry, 6)));
+    setState('重连中…');
+    sys('连接断开，' + Math.round(wait / 1000) + ' 秒后自动重连…（已重连 ' + reconnectTry + ' 次）');
+    reconnectTimer = setTimeout(connect, wait);
+  };
+  ws.onerror = () => {};
 }
 function send(o){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); else sys('未连接'); }
 
@@ -361,8 +415,17 @@ function sendText(){
 }
 $('#send').addEventListener('click', sendText);
 input.addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
-$('#next').addEventListener('click', () => { log.innerHTML=''; sys('换人中…'); send({t:'skip'}); setState(mode === 'group' ? '凑人中…' : '排队中'); });
-$('#rep').addEventListener('click', () => { if (inChat && confirm('举报对方（不含具体哪条消息）？长按某条消息可以单独举报那一条。')) send({t:'report'}); });
+$('#next').addEventListener('click', () => {
+  log.innerHTML = ''; loadTipEl = null;
+  sys(mode === 'group' ? '重新进入大厅…' : '换人中…');
+  send({t: 'skip'});
+  setState(mode === 'group' ? '凑人中…' : '排队中');
+});
+$('#rep').addEventListener('click', () => {
+  if (!inChat) return;
+  if (!confirm('要举报**某一条具体消息**：手机长按那条消息、电脑把鼠标移到消息上点右上角 ⚑。\n\n点「确定」则举报整个会话（不带具体消息），点「取消」回去选具体那条。')) return;
+  send({t: 'report'});
+});
 $('#pic').addEventListener('click', () => $('#file').click());
 
 // 选图 → 压缩到 ≤1280px / JPEG → 直传
@@ -410,6 +473,40 @@ export default {
     if (url.pathname === '/admin') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
       return new Response(ADMIN_PAGE, { headers: { 'content-type': 'text/html;charset=utf-8' } });
+    }
+    if (url.pathname === '/admin/ai') {
+      if (!isAdmin) return new Response('forbidden', { status: 403 });
+      const k = url.searchParams.get('k') || '';
+      const rr = await env.LOBBY.get(env.LOBBY.idFromName('global'))
+        .fetch(new Request('https://do/getreport?k=' + encodeURIComponent(k)));
+      if (!rr.ok) return new Response('report not found', { status: 404 });
+      const rec = await rr.json();
+      const parts = [];
+      if (rec.reported_msg && rec.reported_msg.v) parts.push('【被举报的那条】' + rec.reported_msg.v);
+      (rec.msgs || []).slice(-12).forEach(m => { if (m && m.v) parts.push('【上下文】' + String(m.v).slice(0, 300)); });
+      const text = parts.join('\n').slice(0, 3000);
+      if (!env.AI) return new Response(JSON.stringify({ ok: false, error: 'no-ai-binding' }),
+        { headers: { 'content-type': 'application/json;charset=utf-8' } });
+      try {
+        const out = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+          messages: [
+            { role: 'system', content: '你是中文匿名聊天室的审核助手。根据举报内容判断风险，并只输出一行 JSON，不要多余文字。\n字段：risk 取 high/medium/low；category 用中文短词（色情/暴力/违法交易/涉未成年人/骚扰辱骂/垃圾广告/正常）；reason 中文一句话；suggest 取 ban 或 kick 或 ignore。' },
+            { role: 'user', content: text || '(举报内容为空)' },
+          ],
+          max_tokens: 220,
+        });
+        let verdict = '';
+        if (out && typeof out.response === 'string') verdict = out.response;
+        else if (out && out.choices && out.choices[0] && out.choices[0].message) verdict = out.choices[0].message.content;
+        else verdict = JSON.stringify(out).slice(0, 400);
+        let parsed = null;
+        try { const mm = String(verdict).match(/\{[\s\S]*\}/); if (mm) parsed = JSON.parse(mm[0]); } catch {}
+        return new Response(JSON.stringify({ ok: true, verdict: String(verdict).slice(0, 600), parsed }),
+          { headers: { 'content-type': 'application/json;charset=utf-8' } });
+      } catch (e) {
+        return new Response(JSON.stringify({ ok: false, error: String(e).slice(0, 200) }),
+          { headers: { 'content-type': 'application/json;charset=utf-8' } });
+      }
     }
     if (url.pathname === '/admin/kick' || url.pathname === '/admin/handled' || url.pathname === '/admin/clearmessages') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
@@ -508,6 +605,13 @@ export class Lobby {
       const iph = url.searchParams.get('iph') || '';
       await this.state.storage.delete('ban:' + iph);
       return new Response(JSON.stringify({ ok: true, iph }),
+        { headers: { 'content-type': 'application/json;charset=utf-8' } });
+    }
+    if (url.pathname === '/getreport') {
+      const key = url.searchParams.get('k') || '';
+      const rec = await this.state.storage.get(key);
+      if (!rec) return new Response(JSON.stringify({ ok: false }), { status: 404, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ ok: true, key, ...rec }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/stats') {
