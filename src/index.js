@@ -15,7 +15,7 @@
 
 const MAX_TEXT = 500;
 const MAX_IMG_CHARS = 320000;      // data URL 上限（约 240 KB 图）
-const RATE_MSG = 12, RATE_IMG = 6; // 每 10 秒
+const RATE_MSG = 12, RATE_IMG = 6, RATE_REACT = 30; // 每 10 秒（表情给更宽的额度，不挤占发言）
 const RATE_WINDOW_MS = 10000;
 const KEEP_MSGS = 20;
 const HALL_MAX = 500;              // 大厅软上限（防单实例被压垮）
@@ -28,7 +28,7 @@ const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须
 const IMG_PLACEHOLDER = '…(图，已省略)';
 // DO 实例身份由 idFromName 的 name 决定：改了 DO 代码而不换 name，实例会一直粘着旧代码。
 // 所以「部署后行为没变」时，把 DO_NAME 加个后缀就是最可靠的生效手段（旧 name 的数据仍可读）。
-const DO_NAME = 'main11';   // 缓冲里图片只留占位，完整图不进每人的内存
+const DO_NAME = 'main12';   // 缓冲里图片只留占位，完整图不进每人的内存
 
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -157,7 +157,8 @@ async function api(p){ var r = await fetch('/admin/' + p, { headers: { 'x-admin-
 var OFFSET = 0, LIMIT = 20, Q = '', SEQ = 0;
 async function load(){
   var d, my = ++SEQ;
-  try { d = await api('data?offset=' + OFFSET + '&limit=' + LIMIT + '&q=' + encodeURIComponent(Q)); }
+  var onlyNew = document.getElementById('onlynew').checked;
+  try { d = await api('data?offset=' + OFFSET + '&limit=' + LIMIT + '&q=' + encodeURIComponent(Q) + '&status=' + (onlyNew ? 'unhandled' : 'all')); }
   catch (e) {
     if (my !== SEQ) return;                                  // 已被更新的请求取代，忽略
     try { localStorage.removeItem('anonchat:adminkey'); } catch (x) {}
@@ -173,11 +174,12 @@ async function load(){
     + '<div><b>' + d.retention_days + '</b><span>记录保留（天）</span></div>'
     + '<div><b>' + ((d.bans || []).length) + '</b><span>封禁中</span></div>';
   var onlyNew = document.getElementById('onlynew').checked;
-  var shown = onlyNew ? d.reports.filter(function(x){ return !x.handled; }) : d.reports;
+  var shown = d.reports;
   var total = (d.reports_total === undefined ? d.reports.length : d.reports_total);
   var all = (d.reports_all === undefined ? total : d.reports_all);
+  var un = (d.unhandled_total === undefined ? 0 : d.unhandled_total);
   document.getElementById('rh').textContent = '举报记录（' + total + (Q ? ' / 共 ' + all : '') + '）';
-  document.getElementById('cnt2').textContent = onlyNew ? ('本页未处理：' + shown.length + ' 条') : ('本页 ' + shown.length + ' 条');
+  document.getElementById('cnt2').textContent = '未处理 ' + un + ' 条' + (onlyNew ? '（仅显示未处理）' : '');
   var pages = Math.max(1, Math.ceil(total / LIMIT)), cur = Math.floor(OFFSET / LIMIT) + 1;
   document.getElementById('pager').innerHTML =
       '<button id="pprev"' + (OFFSET <= 0 ? ' disabled' : '') + '>‹ 上一页</button>'
@@ -189,7 +191,7 @@ async function load(){
   if (nx) nx.onclick = function(){ OFFSET = OFFSET + LIMIT; load(); };
   if (ls) ls.onclick = function(){ OFFSET = 0; load(); };
   var h = '';
-  if (!shown.length) h = '<div class="empty">' + (Q ? '没有匹配「' + esc(Q) + '」的记录' : (onlyNew ? '本页没有未处理的举报了 🎉' : '暂无举报记录（平时不落盘，只有举报时才存）')) + '</div>';
+  if (!shown.length) h = '<div class="empty">' + (Q ? '没有匹配「' + esc(Q) + '」的记录' : (onlyNew ? '没有未处理的举报了 🎉' : '暂无举报记录（平时不落盘，只有举报时才存）')) + '</div>';
   for (var i = 0; i < shown.length; i++) {
     var r = shown[i], lines = '';
     (r.msgs || []).forEach(function(m){ lines += (m.tag ? '陌生人' + m.tag : (m.me ? '我' : '对方')) + '：' + esc(String(m.v || '').slice(0, 400)) + String.fromCharCode(10); });
@@ -993,6 +995,7 @@ export default {
         ? '?offset=' + encodeURIComponent(url.searchParams.get('offset') || '0')
           + '&limit=' + encodeURIComponent(url.searchParams.get('limit') || '20')
           + '&q=' + encodeURIComponent(url.searchParams.get('q') || '')
+          + '&status=' + encodeURIComponent(url.searchParams.get('status') || '')
         : '';
       return env.LOBBY.get(env.LOBBY.idFromName(DO_NAME)).fetch(new Request('https://do' + ep + qs));
     }
@@ -1203,6 +1206,7 @@ export class Lobby3 {
       const q = (url.searchParams.get('q') || '').trim().toLowerCase();
       const off = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
       const lim = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit') || '20', 10) || 20));
+      const onlyNew = url.searchParams.get('status') === 'unhandled';
       const hall = this.hall ? [...this.hall.members].filter(c => this.alive(c)).length : 0;
       const rep = await this.dbList({ prefix: 'report:', limit: 1000 });
       const arr = [...rep].map(([k, v]) => {
@@ -1212,14 +1216,17 @@ export class Lobby3 {
         }
         return o;
       }).sort((a, b) => (a.at < b.at ? 1 : -1));
-      const filtered = q ? arr.filter(r => JSON.stringify(r).toLowerCase().indexOf(q) >= 0) : arr;
+      let filtered = q ? arr.filter(r => JSON.stringify(r).toLowerCase().indexOf(q) >= 0) : arr;
+      const unhandledTotal = arr.filter(r => !r.handled).length;
+      if (onlyNew) filtered = filtered.filter(r => !r.handled);
       const page = filtered.slice(off, off + lim);
       const bl = await this.dbList({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-2250', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261009-2320', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000),
-        reports: page, reports_total: filtered.length, reports_all: arr.length, offset: off, limit: lim, q,
+        reports: page, reports_total: filtered.length, reports_all: arr.length, unhandled_total: unhandledTotal,
+        offset: off, limit: lim, q, status: onlyNew ? 'unhandled' : 'all',
         bans,
       }), { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
@@ -1251,7 +1258,7 @@ export class Lobby3 {
       ws: server,
       iph,
       mode: null, peer: null, room: null, tag: 0, lastImg: null,
-      msgs: [], nMsg: 0, nImg: 0, winStart: Date.now(), lastSeen: Date.now(),
+      msgs: [], nMsg: 0, nImg: 0, nReact: 0, winStart: Date.now(), lastSeen: Date.now(),
     };
     this.pairs.set(server, conn);
     server.addEventListener('message', ev => this.onMessage(conn, ev.data));
@@ -1281,7 +1288,7 @@ export class Lobby3 {
     if (opts.startAfter) { sql += ' AND k > ?'; binds.push(opts.startAfter); }
     sql += ' ORDER BY k ' + (desc ? 'DESC' : 'ASC') + ' LIMIT ?';
     binds.push(limit);
-    const res = await this.env.DB.prepare(sql + ' -- ').bind(...binds).all();
+    const res = await this.env.DB.prepare(sql).bind(...binds).all();
     const m = new Map();
     for (const row of (res.results || [])) m.set(row.k, JSON.parse(row.body));
     return m;
@@ -1378,7 +1385,8 @@ export class Lobby3 {
   // 落盘一条聊天记录（key 按时间戳有序，过期由 alarm 清）
   saveHistory(item) {
     const key = 'm:' + String(item.at).padStart(15, '0') + ':' + Math.random().toString(36).slice(2, 6);
-    try { this.dbPut(key, item); } catch {}
+    // 必须等待：D1 写入是异步的，不 await 的话请求一结束这次写就被取消（消息会静默丢）
+    try { this.state.waitUntil(this.dbPut(key, item)); } catch { try { this.dbPut(key, item); } catch {} }
   }
 
   // 从聊天历史里按消息 id 找回原图（只在有人举报图片时才调用）
@@ -1409,21 +1417,11 @@ export class Lobby3 {
   // ---------- 通用 ----------
   rate(conn, isImg) {
     const now = Date.now();
-    if (now - conn.winStart > RATE_WINDOW_MS) { conn.winStart = now; conn.nMsg = 0; conn.nImg = 0; }
+    if (now - conn.winStart > RATE_WINDOW_MS) { conn.winStart = now; conn.nMsg = 0; conn.nImg = 0; conn.nReact = 0; }
     if (isImg) { if (++conn.nImg > RATE_IMG) return false; }
+    else if (conn.__isReact) { if (++conn.nReact > RATE_REACT) return false; }
     else if (++conn.nMsg > RATE_MSG) return false;
     return true;
-  }
-
-  // 缓冲里最多保留 3 张完整图，更早的降级成占位（省内存，又保证近期举报能看到原图）
-  trimImgs(arr) {
-    let n = 0;
-    for (let i = arr.length - 1; i >= 0; i--) {
-      const it = arr[i];
-      if (it && it.k === 'img' && typeof it.v === 'string' && it.v.length > 300) {
-        if (++n > 3) it.v = it.v.slice(0, 200) + '…(图，已省略)';
-      }
-    }
   }
 
   deliver(conn, entry, out) {
@@ -1436,17 +1434,17 @@ export class Lobby3 {
       const h = conn.room;
       for (const c of h.members) {
         if (c === conn) continue;
-        // 只记占位：完整图不进每个人的内存（人多图多会撑爆 DO 的 128MB 内存）
-        // 举报图片时再去历史库按 id 取原图（历史里存的是完整图）
-        if (entry.k === 'img') {
-          c.msgs.push({ id: entry.id, me: 0, k: 'img', tag: conn.tag, v: IMG_PLACEHOLDER, at: entry.at });
-          if (c.msgs.length > KEEP_MSGS) c.msgs.shift();
-        }
+        // 每条消息都记进别人的留证缓冲（文字很小），否则别人举报时服务器手里没有那条、只能瞎兜底；
+        // 图片只记占位，完整图不进每个人的内存（人多图多会撑爆 DO 的 128MB）
+        c.msgs.push(entry.k === 'img'
+          ? { id: entry.id, me: 0, k: 'img', tag: conn.tag, v: IMG_PLACEHOLDER, at: entry.at }
+          : { id: entry.id, me: 0, k: entry.k, tag: conn.tag, v: entry.v, at: entry.at });
+        if (c.msgs.length > KEEP_MSGS) c.msgs.shift();
         this.send(c, Object.assign({ from: conn.tag }, out));
       }
     } else if (conn.peer) {               // 一对一：转发
       const forPeer = Object.assign({}, entry, { me: 0 });
-      if (entry.k === 'img') forPeer.v = IMG_PLACEHOLDER;   // 占位，完整图放 lastImg
+      if (entry.k === 'img') forPeer.v = IMG_PLACEHOLDER;   // 图片占位，完整图放 lastImg（举报时用）
       conn.peer.msgs.push(forPeer);
       if (conn.peer.msgs.length > KEEP_MSGS) conn.peer.msgs.shift();
       if (entry.k === 'img' && out.v) conn.peer.lastImg = { id: entry.id, v: out.v, at: entry.at };
@@ -1476,7 +1474,10 @@ export class Lobby3 {
     if (m.t === 'report') { this.report(conn, String(m.id || '')); return; }
     if (m.t === 'react') {
       // 表情回应：只做「谁对哪条消息回了个什么」的轻量广播，不落库（不改变匿名/不留痕的取向）
-      if (!this.rate(conn, false)) return;
+      conn.__isReact = true;
+      const okRate = this.rate(conn, false);
+      conn.__isReact = false;
+      if (!okRate) return;
       const id = String(m.id || '').slice(0, 40);
       const e = String(m.e || '').slice(0, 8);
       if (!id || !e) return;
@@ -1540,7 +1541,9 @@ export class Lobby3 {
         return null;
       })() : null),
       reported_tag: (target && target.tag) ? target.tag : (peer ? 0 : null),
-      room_staff: room ? [...room.members].map(c => ({ tag: c.tag, iph: c.iph })) : [],
+      // 只记录“当时在场几人/有哪些编号”，不再把每个人的 IP 哈希都存下来（举报一个人不该牵连全场）
+      room_staff: room ? [...room.members].map(c => ({ tag: c.tag })) : [],
+      room_size: room ? room.members.size : 0,
       reported_msg_id: msgId || null,
       reported_msg: target ? { tag: target.tag || 0, k: target.k, at: target.at, v: (target.k === 'img' ? String(target.v || '') : String(target.v || '').slice(0, 500)) } : null,
       msgs: (idx >= 0 ? msgs.slice(Math.max(0, idx - 3), idx + 4) : msgs.slice(-KEEP_MSGS)).map(x =>
