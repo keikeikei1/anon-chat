@@ -58,6 +58,10 @@ const ADMIN_PAGE = `<!doctype html>
   .empty{color:#5d6577;font-size:13px;padding:14px 0}
   .ok{color:#7ee787;font-size:13px;margin-left:4px}
   .meta{font-size:12px;color:#8b93a5;margin-top:6px;word-break:break-all}
+  .repimg{display:block;max-width:260px;max-height:260px;border-radius:10px;margin-top:8px;cursor:zoom-in;border:1px solid #232a3a}
+  #bigimg{position:fixed;inset:0;background:#000d;display:none;align-items:center;justify-content:center;z-index:30;padding:16px}
+  #bigimg.on{display:flex}
+  #bigimg img{max-width:100%;max-height:100%;border-radius:8px}
 </style></head>
 <body>
 <h1>匿名聊天 · 管理 <button id="rf" style="margin-left:auto">刷新</button></h1>
@@ -75,6 +79,7 @@ const ADMIN_PAGE = `<!doctype html>
   <span class="meta" id="cnt2" style="margin:0"></span>
 </div>
 <div id="list"></div>
+<div id="bigimg"><img id="bigimgi" alt=""></div>
 <h2>机器人 / API（同一个 key，可给外部程序用）</h2>
 <div class="card">
   <div class="meta" style="margin:0 0 10px">把 &lt;KEY&gt; 换成地址栏里的 key，返回都是 JSON。</div>
@@ -118,7 +123,10 @@ async function load(){
       +  ' · 被举报 IP 哈希 ' + esc(String(r.reported_ip_hash || '').slice(0, 20)) + '…</div>'
       +  (r.reviewed_by ? '<div class="meta">处理人：' + esc(r.reviewed_by) + '（' + esc(r.reviewed_action || '') + ' · ' + esc(r.reviewed_at || '') + '）</div>' : '')
       +  (r.content_cleared ? '<div class="meta">（聊天内容已清除）</div>' : '')
-      +  (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：' + (r.reported_msg.tag ? ('陌生人 ' + esc(r.reported_msg.tag)) : '对方') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : '')
+      +  (r.reported_msg && r.reported_msg.k === 'img' && /^data:image\//.test(String(r.reported_msg.v || ''))
+            ? '<div class="meta" style="color:#ffb4c0">被举报的图片：' + (r.reported_msg.tag ? ('陌生人 ' + esc(r.reported_msg.tag)) : '对方') + '</div>'
+              + '<img class="repimg" src="' + esc(r.reported_msg.v) + '" alt="reported image">'
+            : (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：' + (r.reported_msg.tag ? ('陌生人 ' + esc(r.reported_msg.tag)) : '对方') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : ''))
       +  (r.room_staff && r.room_staff.length ? '<div class="meta">当时在场：' + r.room_staff.map(function(s){ return '#' + s.tag; }).join(' ') + '</div>' : '')
       +  (lines ? '<pre>' + lines + '</pre>' : '')
       +  '<div class="row" style="margin-top:10px">'
@@ -200,6 +208,12 @@ document.getElementById('api-help').textContent = [
   '   GET /admin/data?key=<KEY>    # 统计 + 举报记录 + 封禁列表',
   '   GET /admin/reset?key=<KEY>   # 清场（踢掉所有在线连接）',
 ].join(String.fromCharCode(10));
+document.getElementById('bigimg').addEventListener('click', function(){ this.classList.remove('on'); document.getElementById('bigimgi').src = ''; });
+document.getElementById('list').addEventListener('click', function(ev){
+  var im = ev.target.closest('img.repimg'); if (!im) return;
+  document.getElementById('bigimgi').src = im.src;
+  document.getElementById('bigimg').classList.add('on');
+});
 document.getElementById('copyapi').onclick = function(){
   try {
     navigator.clipboard.writeText(document.getElementById('api-help').textContent).then(function(){
@@ -811,7 +825,7 @@ export class Lobby {
     const conn = {
       ws: server,
       iph,
-      mode: null, peer: null, room: null, tag: 0,
+      mode: null, peer: null, room: null, tag: 0, lastImg: null,
       msgs: [], nMsg: 0, nImg: 0, winStart: Date.now(), lastSeen: Date.now(),
     };
     this.pairs.set(server, conn);
@@ -929,15 +943,40 @@ export class Lobby {
     return true;
   }
 
+  // 缓冲里最多保留 3 张完整图，更早的降级成占位（省内存，又保证近期举报能看到原图）
+  trimImgs(arr) {
+    let n = 0;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const it = arr[i];
+      if (it && it.k === 'img' && typeof it.v === 'string' && it.v.length > 300) {
+        if (++n > 3) it.v = it.v.slice(0, 200) + '…(图，已省略)';
+      }
+    }
+  }
+
   deliver(conn, entry, out) {
     // 记入自己的留证缓冲
     conn.msgs.push(entry); if (conn.msgs.length > KEEP_MSGS) conn.msgs.shift();
+    this.trimImgs(conn.msgs);
     if (conn.room) {                       // 大厅：落盘记录 + 广播
       this.saveHistory({ id: entry.id, from: conn.tag, k: entry.k, v: out.v, at: entry.at });
-      this.hallBroadcast(Object.assign({ from: conn.tag }, out), conn);
+      if (entry.k === 'img' && out.v) conn.lastImg = { id: entry.id, v: out.v, at: entry.at };
+      const h = conn.room;
+      for (const c of h.members) {
+        if (c === conn) continue;
+        if (entry.k === 'img' && out.v) {
+          c.msgs.push({ id: entry.id, me: 0, k: 'img', tag: conn.tag, v: out.v, at: entry.at });
+          if (c.msgs.length > KEEP_MSGS) c.msgs.shift();
+          this.trimImgs(c.msgs);
+        }
+        this.send(c, Object.assign({ from: conn.tag }, out));
+      }
     } else if (conn.peer) {               // 一对一：转发
-      conn.peer.msgs.push(Object.assign({}, entry, { me: 0 }));
+      const forPeer = Object.assign({}, entry, { me: 0 });
+      conn.peer.msgs.push(forPeer);
       if (conn.peer.msgs.length > KEEP_MSGS) conn.peer.msgs.shift();
+      this.trimImgs(conn.peer.msgs);
+      if (entry.k === 'img' && out.v) conn.peer.lastImg = { id: entry.id, v: out.v, at: entry.at };
       this.send(conn.peer, out);
     }
   }
@@ -976,7 +1015,8 @@ export class Lobby {
       if (!/^data:image\/(jpeg|png|webp|gif);base64,/.test(v)) { this.send(conn, { t: 'err', v: '图片格式不支持' }); return; }
       if (v.length > MAX_IMG_CHARS) { this.send(conn, { t: 'err', v: '图片太大' }); return; }
       const imgId = String(m.id || '').slice(0, 40) || ('s' + Date.now().toString(36));
-      this.deliver(conn, { id: imgId, me: 1, k: 'img', tag: conn.tag, v: v.slice(0, 200) + '…(图，已省略)', at: Date.now() }, { t: 'img', v, id: imgId });
+      // 缓冲里保留完整图（审核要看到原图）；更早的第 4 张起才降级，避免内存无限涨
+      this.deliver(conn, { id: imgId, me: 1, k: 'img', tag: conn.tag, v, at: Date.now() }, { t: 'img', v, id: imgId });
       return;
     }
   }
@@ -984,7 +1024,11 @@ export class Lobby {
   async report(conn, msgId) {
     const msgs = conn.msgs || [];
     const idx = msgId ? msgs.findIndex(x => x && x.id === msgId) : -1;
-    const target = idx >= 0 ? msgs[idx] : null;
+    let target = idx >= 0 ? msgs[idx] : null;
+    // 举报的是图片 → 换成完整图（滚动缓冲里只存截断版，审核看不到图就没法判定）
+    if (target && target.k === 'img' && conn.lastImg && conn.lastImg.id === target.id) {
+      target = Object.assign({}, target, { v: conn.lastImg.v });
+    }
     // 举报 = 只上报给管理员，不自动处置（不断开、不踢人、不退群）
     const peer = conn.peer, room = conn.room;
     const record = {
@@ -999,7 +1043,7 @@ export class Lobby {
       reported_tag: (target && target.tag) ? target.tag : (peer ? 0 : null),
       room_staff: room ? [...room.members].map(c => ({ tag: c.tag, iph: c.iph })) : [],
       reported_msg_id: msgId || null,
-      reported_msg: target ? { tag: target.tag || 0, k: target.k, v: String(target.v || '').slice(0, 500), at: target.at } : null,
+      reported_msg: target ? { tag: target.tag || 0, k: target.k, at: target.at, v: (target.k === 'img' ? String(target.v || '') : String(target.v || '').slice(0, 500)) } : null,
       msgs: idx >= 0 ? msgs.slice(Math.max(0, idx - 3), idx + 4) : msgs.slice(-KEEP_MSGS),
       handled: false,
     };
