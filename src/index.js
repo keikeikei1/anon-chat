@@ -96,14 +96,19 @@ async function load(){
       +  (r.mode === 'group' ? '<span class="tag">举报者 #' + esc(r.reporter_tag || '-') + '</span>' : '') + '</div>'
       +  '<div class="meta">举报者 IP 哈希 ' + esc(String(r.reporter_ip_hash || '').slice(0, 20)) + '…'
       +  ' · 被举报 IP 哈希 ' + esc(String(r.reported_ip_hash || '').slice(0, 20)) + '…</div>'
+      +  (r.content_cleared ? '<div class="meta">（聊天内容已清除）</div>' : '')
       +  (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：陌生人 ' + esc(r.reported_msg.tag || '?') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : '')
       +  (r.room_staff && r.room_staff.length ? '<div class="meta">当时在场：' + r.room_staff.map(function(s){ return '#' + s.tag; }).join(' ') + '</div>' : '')
       +  (lines ? '<pre>' + lines + '</pre>' : '')
       +  '<div class="row" style="margin-top:10px">'
       +    (r.reported_ip_hash ? '<button data-kick="' + esc(r.reported_ip_hash) + '">踢出（在线）</button>' : '')
-      +    (r.reported_ip_hash ? '<button class="d" data-ban="' + esc(r.reported_ip_hash) + '" data-who="被举报方">封禁 7 天</button>' : '')
-      +    '<button data-ban="' + esc(r.reporter_ip_hash) + '" data-who="举报方">封禁举报方</button>'
-      +    (r.handled ? '<span class="tag">已处理</span>' : '<button data-handled="' + esc(r.key) + '">标记已处理</button>')
+      +    (r.reported_ip_hash ? '<button class="d" data-banh="' + esc(r.reported_ip_hash) + '" data-h="8" data-who="被举报方">封禁 8 小时</button>' : '')
+      +    (r.reported_ip_hash ? '<button class="d" data-banh="' + esc(r.reported_ip_hash) + '" data-h="168" data-who="被举报方">封禁 7 天</button>' : '')
+      +    (r.content_cleared ? '<span class="tag">聊天内容已清除</span>' : '<button data-clear="' + esc(r.key) + '">清除聊天内容</button>')
+      +    (r.handled ? '<span class="tag">已忽略</span>' : '<button data-handled="' + esc(r.key) + '">忽略</button>')
+      +  '</div>'
+      +  '<div class="row" style="margin-top:8px">'
+      +    '<button data-banh="' + esc(r.reporter_ip_hash) + '" data-h="168" data-who="举报方">封禁举报方 7 天</button>'
       +  '</div>'
       +  '</div>';
   }
@@ -124,6 +129,17 @@ async function doKick(iph){
   if (!confirm('踢掉这个 IP 哈希当前在线的连接？（不封禁，他可以再进来）')) return;
   var r = await api('kick?iph=' + encodeURIComponent(iph));
   say('已踢掉 ' + (r.kicked || 0) + ' 条在线连接'); load();
+}
+async function doBanH(iph, hours, who){
+  var label = hours >= 24 ? (hours / 24) + ' 天' : hours + ' 小时';
+  if (!confirm('确定封禁「' + who + '」' + label + '？同一 WiFi / 同一出口后面的人会一起被封。')) return;
+  var r = await api('ban?iph=' + encodeURIComponent(iph) + '&h=' + encodeURIComponent(hours));
+  say('已封禁「' + who + '」' + label + '，踢掉在线 ' + (r.kicked || 0) + ' 条连接'); load();
+}
+async function doClear(k){
+  if (!confirm('清除这条举报里的聊天内容？（举报记录本身保留，只抹掉内容快照）')) return;
+  await api('clearmessages?k=' + encodeURIComponent(k));
+  say('聊天内容已清除'); load();
 }
 async function doHandled(k){
   await api('handled?k=' + encodeURIComponent(k));
@@ -148,6 +164,10 @@ document.getElementById('list').addEventListener('click', function(ev){
   if (k) { doKick(k.getAttribute('data-kick')); return; }
   var hd = ev.target.closest('button[data-handled]');
   if (hd) { doHandled(hd.getAttribute('data-handled')); return; }
+  var bh = ev.target.closest('button[data-banh]');
+  if (bh) { doBanH(bh.getAttribute('data-banh'), Number(bh.getAttribute('data-h')) || 168, bh.getAttribute('data-who')); return; }
+  var cl = ev.target.closest('button[data-clear]');
+  if (cl) { doClear(cl.getAttribute('data-clear')); return; }
 });
 document.getElementById('bans').addEventListener('click', function(ev){
   var b = ev.target.closest('button[data-unban]'); if (!b) return;
@@ -185,7 +205,13 @@ const PAGE = `<!doctype html>
   .you{align-self:flex-start;background:#1b2030;border-bottom-left-radius:5px}
   .who{display:block;font-size:11.5px;color:#7f8aa3;margin-bottom:2px}
   .sys{align-self:center;font-size:12.5px;color:#6b7385;background:none;text-align:center;max-width:92%}
+  .m{position:relative}
   .m img{display:block;max-width:100%;border-radius:10px;cursor:zoom-in}
+  .rbtn{position:absolute;top:-9px;right:-9px;display:none;width:26px;height:26px;min-height:26px;padding:0;
+        border-radius:50%;border:1px solid #2b5cff;background:#2b5cff;color:#fff;font-size:13px;line-height:1;cursor:pointer}
+  .m:hover .rbtn{display:block}
+  @media (hover:none){ .rbtn{display:none !important} }
+  .mtip{font-size:11.5px;color:#5d6577;text-align:center}
   footer{padding:8px 10px calc(8px + env(safe-area-inset-bottom));border-top:1px solid #1d2230;
          display:flex;gap:7px;align-items:center;flex:none;background:#0b0d12}
   input,button{font:inherit}
@@ -257,6 +283,10 @@ function sys(t){ el('sys', t); }
 function attachReport(el, id){
   if (!id) return;
   el.dataset.id = id;
+  const b = document.createElement('button');
+  b.type = 'button'; b.className = 'rbtn'; b.title = '举报这条消息'; b.textContent = '⚑';
+  b.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); askReport(id); });
+  el.appendChild(b);
   let timer = null;
   const start = () => { clearTimeout(timer); timer = setTimeout(() => askReport(id), 600); };
   const cancel = () => clearTimeout(timer);
@@ -381,19 +411,20 @@ export default {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
       return new Response(ADMIN_PAGE, { headers: { 'content-type': 'text/html;charset=utf-8' } });
     }
-    if (url.pathname === '/admin/kick' || url.pathname === '/admin/handled') {
+    if (url.pathname === '/admin/kick' || url.pathname === '/admin/handled' || url.pathname === '/admin/clearmessages') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
-      const ep = url.pathname === '/admin/kick'
+      const what = url.pathname.split('/').pop();
+      const ep = what === 'kick'
         ? '/kick?iph=' + encodeURIComponent(url.searchParams.get('iph') || '')
-        : '/handled?k=' + encodeURIComponent(url.searchParams.get('k') || '');
+        : '/' + what + '?k=' + encodeURIComponent(url.searchParams.get('k') || '');
       return env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(new Request('https://do' + ep));
     }
     if (url.pathname === '/admin/ban' || url.pathname === '/admin/unban') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
       const iph = url.searchParams.get('iph') || '';
-      const days = url.searchParams.get('days') || '7';
+      const hours = url.searchParams.get('h') || '168';
       const ep = url.pathname === '/admin/ban'
-        ? '/ban?iph=' + encodeURIComponent(iph) + '&days=' + encodeURIComponent(days)
+        ? '/ban?iph=' + encodeURIComponent(iph) + '&h=' + encodeURIComponent(hours)
         : '/unban?iph=' + encodeURIComponent(iph);
       return env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(new Request('https://do' + ep));
     }
@@ -409,10 +440,9 @@ export default {
         .fetch(new Request('https://do/reset', { headers: { 'x-admin': '1' } }));
     }
     if (url.pathname === '/admin/reports') {
-      const key = url.searchParams.get('key') || '';
-      if (!env.ADMIN_KEY || key !== env.ADMIN_KEY) return new Response('forbidden', { status: 403 });
-      return env.LOBBY.get(env.LOBBY.idFromName('global'))
-        .fetch(new Request('https://do/reports', { headers: { 'x-admin': '1' } }));
+      // 旧链接：过去返回裸 JSON，容易让人以为页面坏了 → 直接跳到管理页
+      if (!isAdmin) return new Response('forbidden', { status: 403 });
+      return Response.redirect('https://' + url.host + '/admin?key=' + encodeURIComponent(adminKey), 302);
     }
     return new Response(PAGE, { headers: { 'content-type': 'text/html;charset=utf-8' } });
   },
@@ -439,6 +469,17 @@ export class Lobby {
       return new Response(JSON.stringify({ ok: true, kicked }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
+    if (url.pathname === '/clearmessages') {
+      const key = url.searchParams.get('k') || '';
+      const rec = await this.state.storage.get(key);
+      if (!rec) return new Response(JSON.stringify({ ok: false, error: 'gone' }),
+        { status: 404, headers: { 'content-type': 'application/json' } });
+      rec.msgs = []; rec.reported_msg = null;
+      rec.content_cleared = true; rec.cleared_at = new Date().toISOString();
+      await this.state.storage.put(key, rec);
+      return new Response(JSON.stringify({ ok: true }),
+        { headers: { 'content-type': 'application/json;charset=utf-8' } });
+    }
     if (url.pathname === '/handled') {
       const key = url.searchParams.get('k') || '';
       const rec = await this.state.storage.get(key);
@@ -451,10 +492,10 @@ export class Lobby {
     }
     if (url.pathname === '/ban') {
       const iph = url.searchParams.get('iph') || '';
-      const days = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '7', 10) || 7));
+      const hours = Math.max(1, Math.min(8760, parseInt(url.searchParams.get('h') || url.searchParams.get('hours') || '168', 10) || 168));
       if (!/^[0-9a-f]{64}$/.test(iph)) return new Response(JSON.stringify({ ok: false, error: 'bad iph' }),
         { status: 400, headers: { 'content-type': 'application/json' } });
-      const rec = { iph, at: new Date().toISOString(), until: Date.now() + days * 86400000, days };
+      const rec = { iph, at: new Date().toISOString(), until: Date.now() + hours * 3600000, hours };
       await this.state.storage.put('ban:' + iph, rec);
       let kicked = 0;
       for (const c of [...this.pairs.values()]) {
