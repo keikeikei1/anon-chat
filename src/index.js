@@ -15,12 +15,14 @@
 
 const MAX_TEXT = 500;
 const MAX_IMG_CHARS = 320000;      // data URL 上限（约 240 KB 图）
+const IMG_KEY_RE = /^(m|keep)\/[0-9]{15}-[a-z0-9]{4,10}\.(jpg|png|webp|gif)$/;   // R2 图片 key（keep/ = 举报取证副本）
+const R2_TTL_MS = 2 * 24 * 3600 * 1000;   // R2 图片留 2 天（比历史里的 1 天多给一天余量）
 const RATE_MSG = 12, RATE_IMG = 6, RATE_REACT = 30; // 每 10 秒（表情给更宽的额度，不挤占发言）
 const RATE_WINDOW_MS = 10000;
 const KEEP_MSGS = 20;
 const HALL_MAX = 500;              // 大厅软上限（防单实例被压垮）
 const HISTORY_TTL_MS = 3 * 24 * 3600 * 1000;  // 聊天记录保留 3 天
-const HISTORY_LIMIT = 100;         // 新人进群一次最多补 100 条
+const HISTORY_LIMIT = 30;          // 新人进群一次最多补 30 条（100 条会刷屏）
 const HISTORY_IMG_MAX = 2;         // 历史里最多重发 2 张图，更早的显示 [图片]
 const HISTORY_IMG_TTL_MS = 24 * 3600 * 1000;  // 图片只保留 1 天（比文字短）
 const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须 > 心跳间隔）
@@ -28,7 +30,7 @@ const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须
 const IMG_PLACEHOLDER = '…(图，已省略)';
 // DO 实例身份由 idFromName 的 name 决定：改了 DO 代码而不换 name，实例会一直粘着旧代码。
 // 所以「部署后行为没变」时，把 DO_NAME 加个后缀就是最可靠的生效手段（旧 name 的数据仍可读）。
-const DO_NAME = 'main12';   // 缓冲里图片只留占位，完整图不进每人的内存
+const DO_NAME = 'main16';   // 缓冲里图片只留占位，完整图不进每人的内存
 
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -356,16 +358,20 @@ const PAGE = `<!doctype html>
   .m{max-width:80%;padding:9px 13px;border-radius:16px;white-space:pre-wrap;word-break:break-word;font-size:15px}
   .me{align-self:flex-end;background:#2b5cff;color:#fff;border-bottom-right-radius:5px}
   .you{align-self:flex-start;background:#1b2030;border-bottom-left-radius:5px}
-  .who{display:block;font-size:11.5px;color:#7f8aa3;margin-bottom:2px;padding-right:58px}
+  .who{display:block;font-size:11.5px;color:#7f8aa3;margin-bottom:2px;padding-right:118px}
   .sys{align-self:center;font-size:12.5px;color:#6b7385;background:none;text-align:center;max-width:92%}
   .m{position:relative}
   .m img{display:block;max-width:100%;max-height:46vh;width:auto;border-radius:10px;cursor:zoom-in;object-fit:contain}
   .m{padding-top:12px}
-  .rbtn{position:absolute;top:3px;right:3px;display:block;height:19px;min-height:19px;padding:0 7px;line-height:17px;
+  .mtools{position:absolute;top:3px;right:3px;display:flex;gap:4px}
+  .rbtn{display:block;height:19px;min-height:19px;padding:0 7px;line-height:17px;
         border-radius:10px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.32);color:#e8eaed;
         font-size:11px;cursor:pointer;opacity:.9}
-  .m:hover .rbtn{opacity:1;border-color:#2b5cff;background:#2b5cff;color:#fff}
+  .mtools button:hover{opacity:1;border-color:#2b5cff;background:#2b5cff;color:#fff}
   .mtip{font-size:11.5px;color:#5d6577;text-align:center}
+  .at{color:#8fb6ff;background:rgba(43,92,255,.16);border-radius:5px;padding:0 3px;font-weight:600}
+  .m.atme{box-shadow:inset 3px 0 0 #f5a524}
+
   footer{padding:8px 10px calc(8px + env(safe-area-inset-bottom));border-top:1px solid #1d2230;
          display:flex;gap:7px;align-items:center;flex:none;background:#0b0d12}
   input,button{font:inherit}
@@ -413,10 +419,7 @@ const PAGE = `<!doctype html>
   #login.on{display:flex}
   #login .lbox{width:100%;max-width:380px;background:#0f1219;border:1px solid #1d2230;border-radius:16px;padding:20px}
   button.p{background:#2b5cff;border-color:#2b5cff;color:#fff}
-  .rbtn2{position:absolute;top:3px;right:58px;display:block;height:19px;min-height:19px;padding:0 7px;line-height:17px;
-         border-radius:10px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.32);color:#e8eaed;
-         font-size:11px;cursor:pointer;opacity:.9}
-  .m:hover .rbtn2{opacity:1;border-color:#2b5cff;background:#2b5cff;color:#fff}
+
 </style>
 </head>
 <body>
@@ -460,7 +463,7 @@ const PAGE = `<!doctype html>
   <label><input type="checkbox" id="ok">
     <span>我已满 18 岁，并理解这是一个<b>无人实时审核</b>的空间，可能遇到令人不适的内容。</span></label>
   <button id="go" class="p" style="width:100%" disabled>进入</button>
-  <div class="tip">请守规矩。违法内容会导致整个服务被关停。</div>
+  <div class="tip">请守规矩。违法内容会导致整个服务被关停。<br><span id="attip"></span></div>
 </div></div>
 
 <script>
@@ -489,10 +492,11 @@ const STR = {
     disc: '连接断开，{s} 秒后自动重连…（已重连 {c} 次）', offline: '连接已断开',
     err_notconn: '未连接', err_net: '网络异常', err_fast: '发太快了，慢一点', err_link: '这里不允许发链接',
     err_imgfast: '图片发太快了', err_imgbig: '图片太大', err_badimg: '图片格式不支持', err_onlyimg: '只能发图片',
-    err_process: '图片处理失败', err_toobig: '图片太大，换一张小点的', who: '陌生人 {n}',
+    err_process: '图片处理失败', err_toobig: '图片太大，换一张小点的', err_upload: '图片上传失败，稍后再试', who: '陌生人 {n}',
     rep_q: '举报这条消息？管理员会看到这条内容和上下文。',
     rep_ask: '要举报某一条具体消息：手机长按那条消息、电脑把鼠标移到消息上点右上角 ⚑。先点「取消」，然后长按/悬停选具体那条。',
     rep_title: '举报这条消息', rep_btn: '⚑ 举报', removed: '管理员移除了一条消息',
+    at_tip: '点别人的编号可以 @他', at_you: '有人 @ 了你',
     react_title: '发个表情', ebtn: '☺', draw: '涂鸦', p_send: '发送', p_cancel: '取消',
     p_undo: '撤销', p_clear: '清空', p_thin: '细', p_fat: '粗', err_drawbig: '画得太满，发送失败，清一下重画',
   },
@@ -515,10 +519,11 @@ const STR = {
     disc: 'disconnected, reconnecting in {s}s… (attempt {c})', offline: 'disconnected',
     err_notconn: 'not connected', err_net: 'network error', err_fast: 'slow down', err_link: 'links are not allowed here',
     err_imgfast: 'sending images too fast', err_imgbig: 'image too large', err_badimg: 'unsupported image format', err_onlyimg: 'images only',
-    err_process: 'image processing failed', err_toobig: 'image too large, pick a smaller one', who: 'stranger {n}',
+    err_process: 'image processing failed', err_toobig: 'image too large, pick a smaller one', err_upload: 'upload failed, try again', who: 'stranger {n}',
     rep_q: 'Report this message? The moderator will see it with its context.',
     rep_ask: 'To report one specific message: long-press it on mobile, or hover and click the ⚑ in the corner on desktop. Press Cancel, then pick that message.',
     rep_title: 'report this message', rep_btn: '⚑ report', removed: 'a message was removed by the moderator',
+    at_tip: 'tap a number to @ someone', at_you: 'you were mentioned',
     react_title: 'react', ebtn: '☺', draw: 'draw', p_send: 'send', p_cancel: 'cancel',
     p_undo: 'undo', p_clear: 'clear', p_thin: 'thin', p_fat: 'thick', err_drawbig: 'drawing too heavy to send, clear some',
   },
@@ -549,7 +554,8 @@ function applyLang() {
   $('#gate').querySelector('p').innerHTML = T('gate_p');
   $('#gate').querySelector('label span').innerHTML = T('gate_ok');
   $('#go').textContent = T('gate_go');
-  $('#gate').querySelector('.tip').textContent = T('gate_tip');
+  $('#gate').querySelector('.tip').childNodes[0].nodeValue = T('gate_tip');
+  var at2 = document.getElementById('attip'); if (at2) at2.textContent = T('at_tip');
   if (!inChat) stat.textContent = T('st_connecting');
 }
 function setLang(l) { LANG = l; try { localStorage.setItem('anonchat:lang', l); } catch (e) {} applyLang(); }
@@ -581,14 +587,29 @@ function sys(t){ el('sys', t); }
 function attachReport(el, id){
   if (!id) id = 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   el.dataset.id = id;
+  const bar = document.createElement('div');
+  bar.className = 'mtools';
+  // @：群里对别人的消息可用，点了就把 @编号 补进输入框
+  if (el.dataset.tag && Number(el.dataset.tag) > 0) {
+    const ab = document.createElement('button');
+    ab.type = 'button'; ab.className = 'rbtn'; ab.title = T('at_tip'); ab.textContent = '@';
+    ab.addEventListener('click', ev => {
+      ev.stopPropagation(); ev.preventDefault();
+      const cur = String(input.value || '').trimEnd();   // 模板串里不能写带反斜杠的正则
+      input.value = (cur ? cur + ' ' : '') + '@' + el.dataset.tag + ' ';
+      input.focus();
+    });
+    bar.appendChild(ab);
+  }
   const rb = document.createElement('button');
-  rb.type = 'button'; rb.className = 'rbtn2'; rb.title = T('react_title'); rb.textContent = T('ebtn');
+  rb.type = 'button'; rb.className = 'rbtn'; rb.title = T('react_title'); rb.textContent = T('ebtn');
   rb.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); openEmoji(id, el); });
-  el.appendChild(rb);
+  bar.appendChild(rb);
   const b = document.createElement('button');
   b.type = 'button'; b.className = 'rbtn'; b.title = T('rep_title'); b.textContent = T('rep_btn');
   b.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); askReport(id); });
-  el.appendChild(b);
+  bar.appendChild(b);
+  el.appendChild(bar);
   let timer = null;
   const start = () => { clearTimeout(timer); timer = setTimeout(() => askReport(id), 600); };
   const cancel = () => clearTimeout(timer);
@@ -639,10 +660,49 @@ function askReport(id){
   if (!inChat) return;
   if (confirm(T('rep_q'))) send({ t: 'report', id });
 }
-function msg(t, me, from, id){ const d = el(me?'me':'you'); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent=T('who',{n:from}); d.appendChild(w); } d.appendChild(document.createTextNode(t)); attachReport(d, id); return d; }
-function img(src, me, from, id){ const d = el(me?'me':'you',''); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent=T('who',{n:from}); d.appendChild(w); }
-  const i = new Image(); i.src = src;
-  i.addEventListener('click', () => { $('#lbi').src = src; $('#lb').classList.add('on'); }); d.appendChild(i); attachReport(d, id); return d; }
+// 把文本里的 @数字 渲染成高亮片段；被 @ 到自己的那条整体标记
+function renderText(d, text, me){
+  const s = String(text == null ? '' : text);
+  let last = 0, i = 0, mentionedMe = false;
+  const isD = c => c >= '0' && c <= '9';
+  while (i < s.length) {
+    if (s.charAt(i) !== '@') { i++; continue; }
+    let j = i + 1;
+    while (j < s.length && isD(s.charAt(j)) && j - i <= 4) j++;
+    const num = s.slice(i + 1, j);
+    if (!num) { i++; continue; }
+    if (i > last) d.appendChild(document.createTextNode(s.slice(last, i)));
+    const sp = document.createElement('span');
+    sp.className = 'at'; sp.textContent = '@' + num;
+    d.appendChild(sp);
+    if (!me && myTag && Number(num) === Number(myTag)) mentionedMe = true;
+    last = j; i = j;
+  }
+  if (last < s.length) d.appendChild(document.createTextNode(s.slice(last)));
+  return mentionedMe;
+}
+function msg(text, me, from, id){
+  const d = el(me?'me':'you');
+  if (from && mode === 'group' && !me) d.dataset.tag = from;   // 群里别人的消息 → 显示 @ 按钮
+  if (from) {
+    const w = document.createElement('span'); w.className = 'who'; w.textContent = T('who',{n:from});
+    d.appendChild(w);
+  }
+  const mentionedMe = renderText(d, text, me);
+  if (mentionedMe) { d.classList.add('atme'); try { sys(T('at_you')); } catch (e) {} }
+  attachReport(d, id); return d;
+}
+// 图片地址：新式是 R2 key（形如 m/123-abc.jpg），老式是 data URL
+function imgUrl(v){ const s = String(v||''); return s.indexOf('data:image/') === 0 ? s : ('/i/' + s); }
+async function uploadImage(dataUrl){
+  const r = await fetch('/upload', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ d: dataUrl }) });
+  if (!r.ok) return null;
+  const js = await r.json().catch(() => null);
+  return (js && js.ok && js.k) ? js.k : null;
+}
+function img(src, me, from, id){ const d = el(me?'me':'you',''); if (from && mode === 'group' && !me) d.dataset.tag = from; if (from) { const w=document.createElement('span'); w.className='who'; w.textContent=T('who',{n:from}); d.appendChild(w); }
+  const i = new Image(); i.src = imgUrl(src);
+  i.addEventListener('click', () => { $('#lbi').src = i.src; $('#lb').classList.add('on'); }); d.appendChild(i); attachReport(d, id); return d; }
 $('#lb').addEventListener('click', () => { $('#lb').classList.remove('on'); $('#lbi').src=''; });
 
 function setState(key, vars){
@@ -769,8 +829,10 @@ $('#file').addEventListener('change', async e => {
   try {
     const d = await compress(f);
     if (d.length > 320000) { sys(T('err_toobig')); return; }
+    const key = await uploadImage(d);
+    if (!key) { sys(T('err_upload')); return; }
     const id = newId();
-    img(d, true, 0, id); send({t:'img', v:d, id});
+    img(d, true, 0, id); send({t:'img', k:key, id});
   } catch { sys(T('err_process')); }
 });
 
@@ -848,7 +910,11 @@ $('#psend').addEventListener('click', () => {
   const d = c2.toDataURL('image/jpeg', 0.85);
   if (d.length > 320000) { sys(T('err_drawbig')); return; }
   document.getElementById('pad').classList.remove('on');
-  const id = newId(); img(d, true, 0, id); send({t:'img', v:d, id});
+  (async () => {
+    const key = await uploadImage(d);
+    if (!key) { sys(T('err_upload')); return; }
+    const id = newId(); img(d, true, 0, id); send({t:'img', k:key, id});
+  })();
 });
 
 function compress(file){
@@ -872,9 +938,52 @@ function compress(file){
 </script>
 </body></html>`;
 
+// 上传限频（每个 isolate 各自计数，够挡普通刷图；真正的滥用还有大小与 TTL 兜着）
+const UP_HITS = new Map();
+function upAllowed(ip, maxPerMin) {
+  const now = Date.now(), w = Math.floor(now / 60000);
+  const k = ip + ':' + w;
+  const n = (UP_HITS.get(k) || 0) + 1;
+  UP_HITS.set(k, n);
+  if (UP_HITS.size > 5000) { for (const kk of UP_HITS.keys()) { if (Number(kk.split(':')[1]) < w - 1) UP_HITS.delete(kk); } }
+  return n <= maxPerMin;
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
+
+    // 图片上传：客户端把压缩后的 data URL 传上来，落 R2，只回一个短 key
+    if (url.pathname === '/upload') {
+      if (req.method !== 'POST') return new Response('method', { status: 405 });
+      const ip = req.headers.get('CF-Connecting-IP') || '0.0.0.0';
+      if (!upAllowed(ip, 20)) return new Response(JSON.stringify({ ok: false, error: 'slow down' }),
+        { status: 429, headers: { 'content-type': 'application/json' } });
+      let body; try { body = await req.json(); } catch { return new Response(JSON.stringify({ ok: false, error: 'bad json' }), { status: 400, headers: { 'content-type': 'application/json' } }); }
+      const d = String((body && body.d) || '');
+      const mm = d.match(/^data:image\/(jpeg|png|webp|gif);base64,(.+)$/);
+      if (!mm) return new Response(JSON.stringify({ ok: false, error: 'bad image' }), { status: 400, headers: { 'content-type': 'application/json' } });
+      if (d.length > MAX_IMG_CHARS) return new Response(JSON.stringify({ ok: false, error: 'too large' }), { status: 413, headers: { 'content-type': 'application/json' } });
+      const ext = mm[1] === 'jpeg' ? 'jpg' : mm[1];
+      const key = 'm/' + String(Date.now()).padStart(15, '0') + '-' + Math.random().toString(36).slice(2, 8) + '.' + ext;
+      const bin = Uint8Array.from(atob(mm[2]), c => c.charCodeAt(0));
+      try { await env.IMG.put(key, bin, { httpMetadata: { contentType: mm[1] === 'jpeg' ? 'image/jpeg' : 'image/' + mm[1] } }); }
+      catch (e) { return new Response(JSON.stringify({ ok: false, error: 'store failed' }), { status: 500, headers: { 'content-type': 'application/json' } }); }
+      return new Response(JSON.stringify({ ok: true, k: key }), { headers: { 'content-type': 'application/json' } });
+    }
+
+    // 取图：key 不可猜（含随机段），命中就长缓存
+    if (url.pathname.startsWith('/i/')) {
+      const key = decodeURIComponent(url.pathname.slice(3));
+      if (!IMG_KEY_RE.test(key)) return new Response('not found', { status: 404 });
+      const obj = await env.IMG.get(key);
+      if (!obj) return new Response('not found', { status: 404 });
+      const h = new Headers();
+      obj.writeHttpMetadata(h);
+      h.set('cache-control', 'public, max-age=604800, immutable');
+      h.set('etag', obj.httpEtag);
+      return new Response(obj.body, { headers: h });
+    }
     if (url.pathname === '/ws') {
       return env.LOBBY.get(env.LOBBY.idFromName(DO_NAME)).fetch(req);
     }
@@ -1100,7 +1209,12 @@ export class Lobby3 {
         try {
           const list = await this.dbList({ prefix: 'm:', limit: 1000 });
           for (const [hk, v] of list) {
-            if (v && uniq.indexOf(v.id) >= 0) { await this.dbDel(hk); histDeleted++; }
+            if (v && uniq.indexOf(v.id) >= 0) {
+              if (v.k === 'img' && typeof v.v === 'string' && IMG_KEY_RE.test(v.v) && v.v.indexOf('keep/') !== 0) {
+                try { await this.env.IMG.delete(v.v); } catch {}     // 聊天图删掉；keep/ 取证副本留给举报记录
+              }
+              await this.dbDel(hk); histDeleted++;
+            }
           }
         } catch {}
       }
@@ -1157,7 +1271,13 @@ export class Lobby3 {
       const key = url.searchParams.get('k') || '';
       const rec = await this.dbGet(key);
       const v = (rec && rec.reported_msg && typeof rec.reported_msg.v === 'string') ? rec.reported_msg.v : '';
-      const mm = v.match(/^data:(image\/[a-z+]+);base64,(.+)$/);
+      if (IMG_KEY_RE.test(v)) {                       // 新式：从 R2 取原图
+        const obj = await this.env.IMG.get(v);
+        if (!obj) return new Response('gone', { status: 404 });
+        const h = new Headers(); obj.writeHttpMetadata(h); h.set('cache-control', 'no-store');
+        return new Response(obj.body, { headers: h });
+      }
+      const mm = v.match(/^data:(image\/[a-z+]+);base64,(.+)$/);   // 老式：内联的 data URL
       if (!mm) return new Response('no image', { status: 404 });
       const bin = Uint8Array.from(atob(mm[2]), c => c.charCodeAt(0));
       return new Response(bin, { headers: { 'content-type': mm[1], 'cache-control': 'no-store' } });
@@ -1211,7 +1331,7 @@ export class Lobby3 {
       const rep = await this.dbList({ prefix: 'report:', limit: 1000 });
       const arr = [...rep].map(([k, v]) => {
         const o = { key: k, ...v };
-        if (o.reported_msg && o.reported_msg.k === 'img' && typeof o.reported_msg.v === 'string' && o.reported_msg.v.length > 300) {
+        if (o.reported_msg && o.reported_msg.k === 'img' && typeof o.reported_msg.v === 'string' && o.reported_msg.v.length > 300 && !IMG_KEY_RE.test(o.reported_msg.v)) {
           o.reported_msg = Object.assign({}, o.reported_msg, { v: '', has_img: true });   // 图片按需单独取，列表保持轻量
         }
         return o;
@@ -1223,7 +1343,7 @@ export class Lobby3 {
       const bl = await this.dbList({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-2320', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261010-0040', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000),
         reports: page, reports_total: filtered.length, reports_all: arr.length, unhandled_total: unhandledTotal,
         offset: off, limit: lim, q, status: onlyNew ? 'unhandled' : 'all',
@@ -1232,7 +1352,13 @@ export class Lobby3 {
     }
     if (url.pathname === '/clearreports') {
       const list = await this.dbList({ prefix: 'report:', limit: 1000 });
-      for (const k of list.keys()) await this.dbDel(k);
+      for (const [rk, rv] of list) {                       // 连取证副本一起删，不留孤儿对象
+        try {
+          const v = rv && rv.reported_msg && rv.reported_msg.v;
+          if (typeof v === 'string' && v.indexOf('keep/') === 0) await this.env.IMG.delete(v);
+        } catch {}
+        await this.dbDel(rk);
+      }
       return new Response(JSON.stringify({ ok: true, deleted: list.size }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
@@ -1346,7 +1472,8 @@ export class Lobby3 {
       for (const [, v] of list) {
         if (!v || !v.at || v.at < cutoff) continue;
         if (v.k === 'img') {
-          if (v.at >= imgCutoff && ++imgs <= HISTORY_IMG_MAX) items.push(v);
+          const isKey = IMG_KEY_RE.test(String(v.v || ''));            // 新式 R2 key：很小，可以都给
+          if (isKey || (v.at >= imgCutoff && ++imgs <= HISTORY_IMG_MAX)) items.push(v);
           else items.push({ from: v.from, k: 'imgph', at: v.at });
         } else items.push(v);
       }
@@ -1407,6 +1534,17 @@ export class Lobby3 {
       const old = await this.dbList({ prefix: 'm:', end: 'm:' + String(cutoff).padStart(15, '0') });
       for (const k of old.keys()) await this.dbDel(k);
     } catch {}
+    // R2 里的图片也按时间清（key 形如 m/<时间戳>-xxx.jpg）
+    try {
+      const lim = Date.now() - R2_TTL_MS;
+      for (let round = 0; round < 5; round++) {
+        const list = await this.env.IMG.list({ prefix: 'm/', limit: 1000 });   // 只清聊天图；keep/ 是取证副本，留着
+        const stale = (list.objects || []).filter(o => Number(String(o.key).slice(2).split('-')[0]) < lim);
+        if (!stale.length) break;
+        await this.env.IMG.delete(stale.map(o => o.key));
+        if (!list.truncated) break;
+      }
+    } catch {}
   }
 
   scheduleCleanup() { try { this.state.storage.setAlarm(Date.now() + 6 * 3600 * 1000); } catch {} }   // alarm 仍用 DO 机制（调度，不是数据）
@@ -1426,7 +1564,8 @@ export class Lobby3 {
 
   deliver(conn, entry, out) {
     // 记入自己的留证缓冲
-    conn.msgs.push(entry.k === 'img' ? { id: entry.id, me: 1, k: 'img', tag: conn.tag, v: IMG_PLACEHOLDER, at: entry.at } : entry);
+    conn.msgs.push(entry.k === 'img' && entry.v.length > 300
+      ? { id: entry.id, me: 1, k: 'img', tag: conn.tag, v: IMG_PLACEHOLDER, at: entry.at } : entry);
     if (conn.msgs.length > KEEP_MSGS) conn.msgs.shift();
     if (conn.room) {                       // 大厅：落盘记录 + 广播
       this.saveHistory({ id: entry.id, from: conn.tag, k: entry.k, v: out.v, at: entry.at });
@@ -1436,7 +1575,7 @@ export class Lobby3 {
         if (c === conn) continue;
         // 每条消息都记进别人的留证缓冲（文字很小），否则别人举报时服务器手里没有那条、只能瞎兜底；
         // 图片只记占位，完整图不进每个人的内存（人多图多会撑爆 DO 的 128MB）
-        c.msgs.push(entry.k === 'img'
+        c.msgs.push(entry.k === 'img' && entry.v.length > 300
           ? { id: entry.id, me: 0, k: 'img', tag: conn.tag, v: IMG_PLACEHOLDER, at: entry.at }
           : { id: entry.id, me: 0, k: entry.k, tag: conn.tag, v: entry.v, at: entry.at });
         if (c.msgs.length > KEEP_MSGS) c.msgs.shift();
@@ -1444,10 +1583,9 @@ export class Lobby3 {
       }
     } else if (conn.peer) {               // 一对一：转发
       const forPeer = Object.assign({}, entry, { me: 0 });
-      if (entry.k === 'img') forPeer.v = IMG_PLACEHOLDER;   // 图片占位，完整图放 lastImg（举报时用）
+      if (entry.k === 'img' && entry.v.length > 300) forPeer.v = IMG_PLACEHOLDER;   // 仅老 data URL 需要占位
       conn.peer.msgs.push(forPeer);
       if (conn.peer.msgs.length > KEEP_MSGS) conn.peer.msgs.shift();
-      if (entry.k === 'img' && out.v) conn.peer.lastImg = { id: entry.id, v: out.v, at: entry.at };
       this.send(conn.peer, out);
     }
   }
@@ -1501,11 +1639,12 @@ export class Lobby3 {
 
     if (m.t === 'img') {
       if (!this.rate(conn, true)) { this.send(conn, { t: 'err', k: 'imgfast' }); return; }
-      const v = String(m.v || '');
-      if (!/^data:image\/(jpeg|png|webp|gif);base64,/.test(v)) { this.send(conn, { t: 'err', k: 'badimg' }); return; }
-      if (v.length > MAX_IMG_CHARS) { this.send(conn, { t: 'err', k: 'imgbig' }); return; }
+      // 只收 R2 key（图片本体在 R2，消息里永远是几十字节）
+      const k = String(m.k || '');
+      const legacy = /^data:image\/(jpeg|png|webp|gif);base64,/.test(String(m.v || '')) ? String(m.v) : '';
+      const v = IMG_KEY_RE.test(k) ? k : (legacy.length && legacy.length <= MAX_IMG_CHARS ? legacy : '');
+      if (!v) { this.send(conn, { t: 'err', k: 'badimg' }); return; }
       const imgId = String(m.id || '').slice(0, 40) || ('s' + Date.now().toString(36));
-      // 缓冲里保留完整图（审核要看到原图）；更早的第 4 张起才降级，避免内存无限涨
       this.deliver(conn, { id: imgId, me: 1, k: 'img', tag: conn.tag, v, at: Date.now() }, { t: 'img', v, id: imgId });
       return;
     }
@@ -1522,11 +1661,22 @@ export class Lobby3 {
       if (idx < 0 && msgs.length) idx = msgs.length - 1;
     }
     let target = idx >= 0 ? msgs[idx] : null;
-    // 举报的是图片 → 想办法拿到完整原图，审核看不到图就没法判定
-    if (target && target.k === 'img' && (typeof target.v !== 'string' || target.v.length < 300)) {
-      let full = null;
-      if (conn.lastImg && conn.lastImg.id === target.id) full = conn.lastImg.v;   // 一对一：刚收到的原图
-      if (!full) full = await this.findHistoryImg(target.id);                     // 群聊：回历史库按 id 找
+    // 举报的是图片：新式（R2 key）复制一份取证副本（原图 2 天后会被清，举报记录要留证据）；
+    // 老式 data URL 若缓冲里被截断过，回历史库取回
+    if (target && target.k === 'img' && IMG_KEY_RE.test(String(target.v || ''))) {
+      const src = String(target.v);
+      if (src.indexOf('keep/') !== 0) {
+        try {
+          const obj = await this.env.IMG.get(src);
+          if (obj) {
+            const keep = 'keep/' + src.slice(2);
+            await this.env.IMG.put(keep, obj.body, { httpMetadata: obj.httpMetadata });
+            target = Object.assign({}, target, { v: keep, src_key: src });
+          }
+        } catch {}
+      }
+    } else if (target && target.k === 'img' && String(target.v || '').length < 300) {
+      const full = await this.findHistoryImg(target.id);
       if (full) target = Object.assign({}, target, { v: full });
     }
     // 举报 = 只上报给管理员，不自动处置（不断开、不踢人、不退群）

@@ -4,6 +4,7 @@
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
   "ai": { "binding": "AI" },
+  "r2_buckets": [{ "binding": "IMG", "bucket_name": "anon-chat-img" }],
   "d1_databases": [{ "binding": "DB", "database_name": "anon-chat", "database_id": "CHANGE_ME_d1_database_id" }],
   "durable_objects": {
     "bindings": [
