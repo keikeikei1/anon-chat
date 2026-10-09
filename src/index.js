@@ -28,7 +28,7 @@ const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须
 const IMG_PLACEHOLDER = '…(图，已省略)';
 // DO 实例身份由 idFromName 的 name 决定：改了 DO 代码而不换 name，实例会一直粘着旧代码。
 // 所以「部署后行为没变」时，把 DO_NAME 加个后缀就是最可靠的生效手段（旧 name 的数据仍可读）。
-const DO_NAME = 'main6';   // 缓冲里图片只留占位，完整图不进每人的内存
+const DO_NAME = 'main7';   // 缓冲里图片只留占位，完整图不进每人的内存
 
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -386,7 +386,7 @@ const STR = {
     err_process: '图片处理失败', err_toobig: '图片太大，换一张小点的', who: '陌生人 {n}',
     rep_q: '举报这条消息？管理员会看到这条内容和上下文。',
     rep_ask: '要举报某一条具体消息：手机长按那条消息、电脑把鼠标移到消息上点右上角 ⚑。先点「取消」，然后长按/悬停选具体那条。',
-    rep_title: '举报这条消息', rep_btn: '⚑ 举报',
+    rep_title: '举报这条消息', rep_btn: '⚑ 举报', removed: '管理员移除了一条消息',
   },
   en: {
     brand: 'anon chat', next: 'next ▸', langBtn: '中文',
@@ -410,7 +410,7 @@ const STR = {
     err_process: 'image processing failed', err_toobig: 'image too large, pick a smaller one', who: 'stranger {n}',
     rep_q: 'Report this message? The moderator will see it with its context.',
     rep_ask: 'To report one specific message: long-press it on mobile, or hover and click the ⚑ in the corner on desktop. Press Cancel, then pick that message.',
-    rep_title: 'report this message', rep_btn: '⚑ report',
+    rep_title: 'report this message', rep_btn: '⚑ report', removed: 'a message was removed by the moderator',
   },
 };
 let LANG = (function () {
@@ -549,6 +549,15 @@ function connect(){
     }
     else if (m.t === 'left') { sys(T('left')); setState(mode === 'group' ? 'st_joining' : 'st_queue'); }
     else if (m.t === 'reported') { sys(T('reported')); }
+    else if (m.t === 'del') {
+      // 管理员清除了这些消息 → 从界面上也拿掉
+      let n = 0;
+      (m.ids || []).forEach(function(id){
+        const el2 = log.querySelector('[data-id="' + String(id).replace(/"/g, '') + '"]');
+        if (el2) { el2.remove(); n++; }
+      });
+      if (n) sys(T('removed'));
+    }
     else if (m.t === 'err') { sys(m.k ? T('err_' + m.k) : (m.v || '')); }
     else if (m.t === 'sys') { sys(m.k ? T('sys_' + m.k, { n: m.n }) : (m.v || '')); }
     else if (m.t === 'pong') {}
@@ -825,10 +834,32 @@ export class Lobby3 {
       const rec = await this.state.storage.get(key);
       if (!rec) return new Response(JSON.stringify({ ok: false, error: 'gone' }),
         { status: 404, headers: { 'content-type': 'application/json' } });
+      // 要删的消息 id：被举报那条 + 记录里的上下文
+      const ids = [];
+      if (rec.reported_msg_id) ids.push(rec.reported_msg_id);
+      if (rec.reported_msg && rec.reported_msg.id) ids.push(rec.reported_msg.id);
+      for (const m of (rec.msgs || [])) { if (m && m.id) ids.push(m.id); }
+      const uniq = [...new Set(ids)];
+      // ① 清举报快照
       rec.msgs = []; rec.reported_msg = null;
       rec.content_cleared = true; rec.cleared_at = new Date().toISOString();
       await this.state.storage.put(key, rec);
-      return new Response(JSON.stringify({ ok: true }),
+      // ② 从聊天历史库里删掉这些消息（按 id 匹配）
+      let histDeleted = 0;
+      if (uniq.length) {
+        try {
+          const list = await this.state.storage.list({ prefix: 'm:', limit: 1000 });
+          for (const [hk, v] of list) {
+            if (v && uniq.indexOf(v.id) >= 0) { await this.state.storage.delete(hk); histDeleted++; }
+          }
+        } catch {}
+      }
+      // ③ 通知所有在线的人（大厅 + 一对一）把这几条从界面上移除
+      let notified = 0;
+      if (uniq.length) {
+        for (const c of this.pairs.values()) { this.send(c, { t: 'del', ids: uniq }); notified++; }
+      }
+      return new Response(JSON.stringify({ ok: true, ids: uniq.length, history_deleted: histDeleted, notified }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/handled') {
@@ -920,7 +951,7 @@ export class Lobby3 {
       const bl = await this.state.storage.list({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-2000', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261009-2015', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000),
         reports: page, reports_total: filtered.length, reports_all: arr.length, offset: off, limit: lim, q,
         bans,
