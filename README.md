@@ -1,5 +1,7 @@
 # anon-chat
 
+**English** | [中文](README.zh-CN.md)
+
 Anonymous random chat — **1-on-1 pairing** plus a **single public lobby** — running entirely on
 Cloudflare Workers + Durable Objects. Zero servers, zero maintenance, and it fits in the free tier.
 
