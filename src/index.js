@@ -28,7 +28,7 @@ const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须
 const IMG_PLACEHOLDER = '…(图，已省略)';
 // DO 实例身份由 idFromName 的 name 决定：改了 DO 代码而不换 name，实例会一直粘着旧代码。
 // 所以「部署后行为没变」时，把 DO_NAME 加个后缀就是最可靠的生效手段（旧 name 的数据仍可读）。
-const DO_NAME = 'main7';   // 缓冲里图片只留占位，完整图不进每人的内存
+const DO_NAME = 'main10';   // 缓冲里图片只留占位，完整图不进每人的内存
 
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -293,7 +293,7 @@ const PAGE = `<!doctype html>
   .who{display:block;font-size:11.5px;color:#7f8aa3;margin-bottom:2px;padding-right:58px}
   .sys{align-self:center;font-size:12.5px;color:#6b7385;background:none;text-align:center;max-width:92%}
   .m{position:relative}
-  .m img{display:block;max-width:100%;border-radius:10px;cursor:zoom-in}
+  .m img{display:block;max-width:100%;max-height:46vh;width:auto;border-radius:10px;cursor:zoom-in;object-fit:contain}
   .m{padding-top:12px}
   .rbtn{position:absolute;top:3px;right:3px;display:block;height:19px;min-height:19px;padding:0 7px;line-height:17px;
         border-radius:10px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.32);color:#e8eaed;
@@ -325,6 +325,28 @@ const PAGE = `<!doctype html>
   #lb.on{display:flex}
   #lb img{max-width:100%;max-height:100%;border-radius:8px}
   .tip{font-size:12px;color:#5d6577;text-align:center;margin-top:14px;line-height:1.6}
+  #pad{position:fixed;inset:0;background:#0b0d12;z-index:26;display:none;flex-direction:column}
+  #pad.on{display:flex}
+  #pad .pbar{display:flex;gap:6px;align-items:center;padding:8px;border-bottom:1px solid #1d2230;flex-wrap:wrap}
+  #pad .pbar button{min-height:38px;padding:7px 11px;font-size:13px}
+  #pad .pbar button.on{background:#2b5cff;border-color:#2b5cff;color:#fff}
+  #pad .pwrap{flex:1;display:flex;align-items:center;justify-content:center;padding:10px}
+  #pcv{width:100%;aspect-ratio:4/3;max-height:100%;background:#fff;touch-action:none;display:block;
+       border-radius:12px;box-shadow:0 6px 20px #0006}
+  .sw{width:30px;height:30px;border-radius:50%;border:2px solid #555;display:inline-block;cursor:pointer;vertical-align:middle}
+  .sw.on{border-color:#2b5cff;box-shadow:0 0 0 2px #2b5cff55}
+  #emoji{position:fixed;display:none;z-index:25;background:#161b26;border:1px solid #232a3a;border-radius:14px;
+         padding:6px;gap:2px;box-shadow:0 8px 24px #0009}
+  #emoji.on{display:flex}
+  #emoji button{background:none;border:none;padding:6px 7px;min-height:38px;font-size:22px;line-height:1;border-radius:9px;cursor:pointer}
+  #emoji button:hover{background:#232a3a}
+  .rsum{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+  .rchip{display:inline-flex;align-items:center;gap:3px;font-size:12.5px;background:#232a3a;color:#c3c9d6;
+         border-radius:9px;padding:2px 7px;line-height:1.5}
+  .rbtn2{position:absolute;top:3px;right:58px;display:block;height:19px;min-height:19px;padding:0 7px;line-height:17px;
+         border-radius:10px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.32);color:#e8eaed;
+         font-size:11px;cursor:pointer;opacity:.9}
+  .m:hover .rbtn2{opacity:1;border-color:#2b5cff;background:#2b5cff;color:#fff}
 </style>
 </head>
 <body>
@@ -338,11 +360,25 @@ const PAGE = `<!doctype html>
 <footer>
   <input id="in" placeholder="说点什么…" disabled autocomplete="off" enterkeyhint="send">
   <input type="file" id="file" accept="image/*" style="display:none">
+  <button id="draw" disabled title="涂鸦" style="padding:11px 12px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg></button>
   <button id="pic" disabled title="发图片" style="padding:11px 12px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="9" r="1.5" fill="currentColor" stroke="none"/><path d="M21 15l-5-5L5 21"/></svg></button>
   <button id="send" class="p" disabled>发送</button>
 </footer>
 
 <div id="lb"><img id="lbi" alt=""></div>
+<div id="emoji"></div>
+<div id="pad">
+  <div class="pbar">
+    <span id="pcolors"></span>
+    <button id="pthin" class="on">细</button>
+    <button id="pfat">粗</button>
+    <button id="pundo">撤销</button>
+    <button id="pclear">清空</button>
+    <button id="pcancel">取消</button>
+    <button id="psend" class="p">发送</button>
+  </div>
+  <div class="pwrap"><canvas id="pcv"></canvas></div>
+</div>
 
 <div id="gate"><div class="box">
   <h1>18+ · 匿名 · 不留痕</h1>
@@ -387,6 +423,8 @@ const STR = {
     rep_q: '举报这条消息？管理员会看到这条内容和上下文。',
     rep_ask: '要举报某一条具体消息：手机长按那条消息、电脑把鼠标移到消息上点右上角 ⚑。先点「取消」，然后长按/悬停选具体那条。',
     rep_title: '举报这条消息', rep_btn: '⚑ 举报', removed: '管理员移除了一条消息',
+    react_title: '发个表情', ebtn: '☺', draw: '涂鸦', p_send: '发送', p_cancel: '取消',
+    p_undo: '撤销', p_clear: '清空', p_thin: '细', p_fat: '粗', err_drawbig: '画得太满，发送失败，清一下重画',
   },
   en: {
     brand: 'anon chat', next: 'next ▸', langBtn: '中文',
@@ -411,6 +449,8 @@ const STR = {
     rep_q: 'Report this message? The moderator will see it with its context.',
     rep_ask: 'To report one specific message: long-press it on mobile, or hover and click the ⚑ in the corner on desktop. Press Cancel, then pick that message.',
     rep_title: 'report this message', rep_btn: '⚑ report', removed: 'a message was removed by the moderator',
+    react_title: 'react', ebtn: '☺', draw: 'draw', p_send: 'send', p_cancel: 'cancel',
+    p_undo: 'undo', p_clear: 'clear', p_thin: 'thin', p_fat: 'thick', err_drawbig: 'drawing too heavy to send, clear some',
   },
 };
 let LANG = (function () {
@@ -432,6 +472,7 @@ function applyLang() {
   input.placeholder = T('in');
   $('#send').textContent = T('send');
   $('#pic').title = T('pic');
+  $('#draw').title = T('draw');
   $('#m-one').innerHTML = T('m_one') + '<small>' + T('m_one_s') + '</small>';
   $('#m-group').innerHTML = T('m_group') + '<small>' + T('m_group_s') + '</small>';
   $('#gate').querySelector('h1').textContent = T('gate_h');
@@ -470,6 +511,10 @@ function sys(t){ el('sys', t); }
 function attachReport(el, id){
   if (!id) id = 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   el.dataset.id = id;
+  const rb = document.createElement('button');
+  rb.type = 'button'; rb.className = 'rbtn2'; rb.title = T('react_title'); rb.textContent = T('ebtn');
+  rb.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); openEmoji(id, el); });
+  el.appendChild(rb);
   const b = document.createElement('button');
   b.type = 'button'; b.className = 'rbtn'; b.title = T('rep_title'); b.textContent = T('rep_btn');
   b.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); askReport(id); });
@@ -482,6 +527,44 @@ function attachReport(el, id){
   el.addEventListener('mousedown', start); el.addEventListener('mouseup', cancel); el.addEventListener('mouseleave', cancel);
   el.addEventListener('contextmenu', e => { e.preventDefault(); askReport(id); });
 }
+const EMOJIS = ['👍','😂','❤️','😮','😢','👎'];
+let emojiTarget = null;
+function openEmoji(id, el){
+  if (!inChat) return;
+  emojiTarget = id;
+  const box = $('#emoji');
+  box.innerHTML = '';
+  EMOJIS.forEach(e => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = e;
+    b.addEventListener('click', ev => { ev.stopPropagation(); box.classList.remove('on'); send({t:'react', id, e}); addReact(el, e, 1); });
+    box.appendChild(b);
+  });
+  box.classList.add('on');
+  const r = el.getBoundingClientRect();
+  const w = box.offsetWidth || 300;
+  let left = Math.min(Math.max(6, r.left), window.innerWidth - w - 6);
+  let top = r.bottom + 6;
+  if (top + 60 > window.innerHeight) top = Math.max(6, r.top - 54);
+  box.style.left = left + 'px'; box.style.top = top + 'px';
+}
+document.addEventListener('click', ev => { if (!ev.target.closest('#emoji')) $('#emoji').classList.remove('on'); });
+document.addEventListener('scroll', () => $('#emoji').classList.remove('on'), true);
+
+// 在消息上显示/累加一个表情计数
+function addReact(el, e, n){
+  if (!el) return;
+  let box = el.querySelector('.rsum');
+  if (!box) { box = document.createElement('div'); box.className = 'rsum'; el.appendChild(box); }
+  const chip = [...box.querySelectorAll('.rchip')].find(c => c.dataset.e === e);
+  if (chip) { chip.dataset.n = String(Number(chip.dataset.n || 1) + n); chip.querySelector('b').textContent = chip.dataset.n; return; }
+  const c2 = document.createElement('span');
+  c2.className = 'rchip'; c2.dataset.e = e; c2.dataset.n = '1';
+  c2.appendChild(document.createTextNode(e + ' '));
+  const bb = document.createElement('b'); bb.textContent = '1'; c2.appendChild(bb);
+  box.appendChild(c2);
+}
+
 function askReport(id){
   if (!inChat) return;
   if (confirm(T('rep_q'))) send({ t: 'report', id });
@@ -495,7 +578,7 @@ $('#lb').addEventListener('click', () => { $('#lb').classList.remove('on'); $('#
 function setState(key, vars){
   stat.textContent = T(key, vars);
   const on = key === 'st_chat' || key === 'st_group';
-  input.disabled = !on; $('#send').disabled = !on; $('#pic').disabled = !on;
+  input.disabled = !on; $('#send').disabled = !on; $('#pic').disabled = !on; $('#draw').disabled = !on;
   $('#next').disabled = !joined;
   // 群聊里没有「换一个」的意义，改成「切成一对一」，免得住进来就出不去
   $('#next').textContent = (mode === 'group') ? T('to_one') : T('next');
@@ -549,6 +632,10 @@ function connect(){
     }
     else if (m.t === 'left') { sys(T('left')); setState(mode === 'group' ? 'st_joining' : 'st_queue'); }
     else if (m.t === 'reported') { sys(T('reported')); }
+    else if (m.t === 'react') {
+      const el2 = log.querySelector('[data-id="' + String(m.id || '').replace(/"/g, '') + '"]');
+      if (el2) addReact(el2, m.e, 1);
+    }
     else if (m.t === 'del') {
       // 管理员清除了这些消息 → 从界面上也拿掉
       let n = 0;
@@ -615,6 +702,83 @@ $('#file').addEventListener('change', async e => {
     const id = newId();
     img(d, true, 0, id); send({t:'img', v:d, id});
   } catch { sys(T('err_process')); }
+});
+
+// ---------- 涂鸦 ----------
+const PCOLORS = ['#111111', '#e5484d', '#2b5cff', '#12a150', '#f5a524'];
+let pcolor = PCOLORS[0], pfat = false, pHist = [], pDrawing = false;
+function padInit(){
+  const cv = document.getElementById('pcv'), g = cv.getContext('2d');
+  cv.style.width = '100%';   // 尺寸交给 CSS（4:3），这里只按渲染结果建位图
+  const r = cv.getBoundingClientRect();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = '#fff'; g.fillRect(0, 0, r.width, r.height);
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  pHist = []; pDrawing = false;
+  // 颜色
+  const cbox = document.getElementById('pcolors'); cbox.innerHTML = '';
+  PCOLORS.forEach((c, i) => {
+    const s = document.createElement('span');
+    s.className = 'sw' + (i === 0 ? ' on' : ''); s.style.background = c;
+    s.addEventListener('click', () => { pcolor = c; [...cbox.children].forEach(x => x.classList.remove('on')); s.classList.add('on'); });
+    cbox.appendChild(s);
+  });
+  document.getElementById('pthin').classList.add('on'); document.getElementById('pfat').classList.remove('on');
+  document.getElementById('pthin').textContent = T('p_thin'); document.getElementById('pfat').textContent = T('p_fat');
+  document.getElementById('pundo').textContent = T('p_undo'); document.getElementById('pclear').textContent = T('p_clear');
+  document.getElementById('pcancel').textContent = T('p_cancel'); document.getElementById('psend').textContent = T('p_send');
+}
+function pPos(cv, ev){
+  const r = cv.getBoundingClientRect();
+  const p = ev.touches && ev.touches[0] ? ev.touches[0] : ev;
+  return { x: p.clientX - r.left, y: p.clientY - r.top };
+}
+(function bindPad(){
+  const cv = document.getElementById('pcv'), g = cv.getContext('2d');
+  const down = ev => {
+    ev.preventDefault();
+    try { pHist.push(cv.toDataURL('image/jpeg', 0.6)); if (pHist.length > 12) pHist.shift(); } catch (e) {}
+    pDrawing = true;
+    const { x, y } = pPos(cv, ev);
+    g.beginPath(); g.moveTo(x, y); g.strokeStyle = pcolor; g.lineWidth = pfat ? 7 : 3;
+    g.lineTo(x + 0.1, y + 0.1); g.stroke();
+  };
+  const move = ev => { if (!pDrawing) return; ev.preventDefault(); const { x, y } = pPos(cv, ev); g.lineTo(x, y); g.stroke(); };
+  const up = () => { pDrawing = false; };
+  cv.addEventListener('mousedown', down); cv.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+  cv.addEventListener('touchstart', down, { passive: false });
+  cv.addEventListener('touchmove', move, { passive: false });
+  cv.addEventListener('touchend', up); cv.addEventListener('touchcancel', up);
+})();
+$('#draw').addEventListener('click', () => { document.getElementById('pad').classList.add('on'); padInit(); });
+$('#pthin').addEventListener('click', () => { pfat = false; $('#pthin').classList.add('on'); $('#pfat').classList.remove('on'); });
+$('#pfat').addEventListener('click', () => { pfat = true; $('#pfat').classList.add('on'); $('#pthin').classList.remove('on'); });
+$('#pclear').addEventListener('click', () => {
+  const cv = document.getElementById('pcv'), g = cv.getContext('2d'), r = cv.getBoundingClientRect();
+  try { pHist.push(cv.toDataURL('image/jpeg', 0.6)); } catch (e) {}
+  g.fillStyle = '#fff'; g.fillRect(0, 0, r.width, r.height);
+});
+$('#pundo').addEventListener('click', () => {
+  const cv = document.getElementById('pcv'), g = cv.getContext('2d');
+  const last = pHist.pop(); if (!last) return;
+  const i = new Image();
+  i.onload = () => { const r = cv.getBoundingClientRect(); g.clearRect(0, 0, r.width, r.height); g.drawImage(i, 0, 0, r.width, r.height); };
+  i.src = last;
+});
+$('#pcancel').addEventListener('click', () => document.getElementById('pad').classList.remove('on'));
+$('#psend').addEventListener('click', () => {
+  const cv = document.getElementById('pcv');
+  // 缩到宽 ≤720 再编码，保证体积可控
+  const w0 = cv.width, h0 = cv.height, scale = Math.min(1, 720 / w0);
+  const c2 = document.createElement('canvas'); c2.width = Math.round(w0 * scale); c2.height = Math.round(h0 * scale);
+  const g2 = c2.getContext('2d'); g2.fillStyle = '#fff'; g2.fillRect(0, 0, c2.width, c2.height); g2.drawImage(cv, 0, 0, c2.width, c2.height);
+  const d = c2.toDataURL('image/jpeg', 0.85);
+  if (d.length > 320000) { sys(T('err_drawbig')); return; }
+  document.getElementById('pad').classList.remove('on');
+  const id = newId(); img(d, true, 0, id); send({t:'img', v:d, id});
 });
 
 function compress(file){
@@ -951,7 +1115,7 @@ export class Lobby3 {
       const bl = await this.state.storage.list({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-2015', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261009-2035', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000),
         reports: page, reports_total: filtered.length, reports_all: arr.length, offset: off, limit: lim, q,
         bans,
@@ -1181,6 +1345,20 @@ export class Lobby3 {
       return;
     }
     if (m.t === 'report') { this.report(conn, String(m.id || '')); return; }
+    if (m.t === 'react') {
+      // 表情回应：只做「谁对哪条消息回了个什么」的轻量广播，不落库（不改变匿名/不留痕的取向）
+      if (!this.rate(conn, false)) return;
+      const id = String(m.id || '').slice(0, 40);
+      const e = String(m.e || '').slice(0, 8);
+      if (!id || !e) return;
+      const out = { t: 'react', id, e, from: conn.tag || 0 };
+      conn.msgs.push({ id, me: 1, k: 'react', tag: conn.tag, v: e, at: Date.now() });
+      if (conn.msgs.length > KEEP_MSGS) conn.msgs.shift();
+      // 不回给发送者：前端点选时已本地 +1，回传会变成 2
+      if (conn.room) { const h = conn.room; for (const c of h.members) { if (c !== conn) this.send(c, out); } }
+      else if (conn.peer) { this.send(conn.peer, out); }
+      return;
+    }
 
     if (m.t === 'msg') {
       if (!this.rate(conn, false)) { this.send(conn, { t: 'err', k: 'fast' }); return; }
