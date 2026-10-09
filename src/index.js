@@ -106,6 +106,7 @@ async function load(){
       +  (r.mode === 'group' ? '<span class="tag">举报者 #' + esc(r.reporter_tag || '-') + '</span>' : '') + '</div>'
       +  '<div class="meta">举报者 IP 哈希 ' + esc(String(r.reporter_ip_hash || '').slice(0, 20)) + '…'
       +  ' · 被举报 IP 哈希 ' + esc(String(r.reported_ip_hash || '').slice(0, 20)) + '…</div>'
+      +  (r.reviewed_by ? '<div class="meta">处理人：' + esc(r.reviewed_by) + '（' + esc(r.reviewed_action || '') + ' · ' + esc(r.reviewed_at || '') + '）</div>' : '')
       +  (r.content_cleared ? '<div class="meta">（聊天内容已清除）</div>' : '')
       +  (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：' + (r.reported_msg.tag ? ('陌生人 ' + esc(r.reported_msg.tag)) : '对方') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : '')
       +  (r.room_staff && r.room_staff.length ? '<div class="meta">当时在场：' + r.room_staff.map(function(s){ return '#' + s.tag; }).join(' ') + '</div>' : '')
@@ -423,7 +424,7 @@ $('#next').addEventListener('click', () => {
 });
 $('#rep').addEventListener('click', () => {
   if (!inChat) return;
-  if (!confirm('要举报**某一条具体消息**：手机长按那条消息、电脑把鼠标移到消息上点右上角 ⚑。\n\n点「确定」则举报整个会话（不带具体消息），点「取消」回去选具体那条。')) return;
+  if (!confirm('要举报某一条具体消息：手机长按那条消息、电脑把鼠标移到消息上点右上角 ⚑。' + String.fromCharCode(10) + String.fromCharCode(10) + '点「确定」则举报整个会话（不带具体消息），点「取消」回去选具体那条。')) return;
   send({t: 'report'});
 });
 $('#pic').addEventListener('click', () => $('#file').click());
@@ -473,6 +474,53 @@ export default {
     if (url.pathname === '/admin') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
       return new Response(ADMIN_PAGE, { headers: { 'content-type': 'text/html;charset=utf-8' } });
+    }
+    // ---- 给外部机器人用的审核 API（同一个 ADMIN_KEY）----
+    if (url.pathname === '/api/pending') {
+      if (!isAdmin) return new Response(JSON.stringify({ ok: false, error: 'bad key' }),
+        { status: 403, headers: { 'content-type': 'application/json;charset=utf-8' } });
+      const limit = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit') || '20', 10) || 20));
+      const onlyNew = url.searchParams.get('status') !== 'all';
+      const d = await env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(new Request('https://do/stats'));
+      const js = await d.json();
+      let items = js.reports || [];
+      if (onlyNew) items = items.filter(r => !r.handled);
+      items = items.slice(0, limit).map(r => ({
+        key: r.key, at: r.at, mode: r.mode, handled: !!r.handled, content_cleared: !!r.content_cleared,
+        reporter_tag: r.reporter_tag, reporter_ip_hash: r.reporter_ip_hash, reported_ip_hash: r.reported_ip_hash,
+        reported_tag: r.reported_tag, reported_msg: r.reported_msg || null, msgs: r.msgs || [],
+      }));
+      return new Response(JSON.stringify({ ok: true, count: items.length, pending_total: (js.reports || []).filter(r => !r.handled).length, items }, null, 2),
+        { headers: { 'content-type': 'application/json;charset=utf-8' } });
+    }
+    if (url.pathname === '/api/action') {
+      if (!isAdmin) return new Response(JSON.stringify({ ok: false, error: 'bad key' }),
+        { status: 403, headers: { 'content-type': 'application/json;charset=utf-8' } });
+      const action = url.searchParams.get('action') || '';
+      const k = url.searchParams.get('k') || '';
+      const iph = url.searchParams.get('iph') || '';
+      const hours = url.searchParams.get('hours') || url.searchParams.get('h') || '168';
+      const by = (url.searchParams.get('by') || 'external').slice(0, 40);
+      const stub = env.LOBBY.get(env.LOBBY.idFromName('global'));
+      let ep = null;
+      if (action === 'ban') ep = '/ban?iph=' + encodeURIComponent(iph) + '&h=' + encodeURIComponent(hours);
+      else if (action === 'unban') ep = '/unban?iph=' + encodeURIComponent(iph);
+      else if (action === 'kick') ep = '/kick?iph=' + encodeURIComponent(iph);
+      else if (action === 'clear') ep = '/clearmessages?k=' + encodeURIComponent(k);
+      else if (action === 'ignore') ep = '/handled?k=' + encodeURIComponent(k);
+      else return new Response(JSON.stringify({ ok: false, error: 'unknown action, use ban|unban|kick|clear|ignore' }),
+        { status: 400, headers: { 'content-type': 'application/json;charset=utf-8' } });
+      const r = await stub.fetch(new Request('https://do' + ep));
+      // 记录是谁批的（审计）
+      if (k && (action === 'ban' || action === 'ignore' || action === 'clear')) {
+        try {
+          const rec = await stub.fetch(new Request('https://do/markreviewed?k=' + encodeURIComponent(k) + '&by=' + encodeURIComponent(by) + '&action=' + action));
+          await rec.text();
+        } catch {}
+      }
+      const body = await r.text();
+      return new Response('{"ok":' + (r.ok ? 'true' : 'false') + ',"action":"' + action + '","by":"' + by + '","result":' + (body || 'null') + '}',
+        { status: r.status, headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/admin/ai') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
@@ -606,6 +654,17 @@ export class Lobby {
       await this.state.storage.delete('ban:' + iph);
       return new Response(JSON.stringify({ ok: true, iph }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
+    }
+    if (url.pathname === '/markreviewed') {
+      const key = url.searchParams.get('k') || '';
+      const rec = await this.state.storage.get(key);
+      if (!rec) return new Response(JSON.stringify({ ok: false }), { status: 404, headers: { 'content-type': 'application/json' } });
+      rec.reviewed_by = (url.searchParams.get('by') || '').slice(0, 40);
+      rec.reviewed_action = (url.searchParams.get('action') || '').slice(0, 20);
+      rec.reviewed_at = new Date().toISOString();
+      if (rec.reviewed_action === 'ignore') rec.handled = true;
+      await this.state.storage.put(key, rec);
+      return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/getreport') {
       const key = url.searchParams.get('k') || '';
