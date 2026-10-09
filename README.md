@@ -18,7 +18,7 @@ Text and images. Chinese UI. Mobile-first. No accounts, no cookies, no message l
 | **Age gate** | 18+ acknowledgement before entering. |
 | **Reports** | Reports are **recorded only** — nothing is auto-kicked or auto-banned. An operator reviews them in the admin panel and decides. |
 | **Moderation** | Kill / ban / unban by IP hash (7 days default), plus keyword filters and per-connection rate limits. |
-| **Heartbeat** | 20 s ping/pong + stale-connection culling, so you never get paired with a ghost. |
+| **Heartbeat** | 3-minute ping/pong + stale-connection culling (5 min), so you never get paired with a ghost. |
 
 ## Architecture
 

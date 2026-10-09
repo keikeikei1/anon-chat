@@ -21,7 +21,7 @@ const HALL_MAX = 500;              // 大厅软上限（防单实例被压垮）
 const HISTORY_TTL_MS = 3 * 24 * 3600 * 1000;  // 聊天记录保留 3 天
 const HISTORY_LIMIT = 100;         // 新人进群一次最多补 100 条
 const HISTORY_IMG_MAX = 2;         // 历史里最多重发 2 张图，更早的显示 [图片]
-const STALE_MS = 75000;            // 超过这么久没动静视为僵尸
+const STALE_MS = 300000;           // 超过这么久没动静视为僵尸（须 > 心跳间隔）
 const BLOCK_WORDS = ['http://', 'https://', 'www.'];  // 挡外链，防广告/钓鱼
 
 async function sha256hex(s) {
@@ -267,7 +267,7 @@ function setState(s){
   inChat = on;
 }
 
-function startHeartbeat(){ clearInterval(window.__hb); window.__hb = setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({t:'ping'})); }, 20000); }
+function startHeartbeat(){ clearInterval(window.__hb); window.__hb = setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({t:'ping'})); }, 180000); }
 
 function connect(){
   log.innerHTML = '';
