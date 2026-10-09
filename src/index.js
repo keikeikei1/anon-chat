@@ -259,7 +259,8 @@ const PAGE = `<!doctype html>
 </head>
 <body>
 <header>
-  <b>匿名聊天</b><span id="stat">连接中…</span>
+  <b id="brand">匿名聊天</b><span id="stat">连接中…</span>
+  <button id="lang" title="switch language" style="margin-left:auto;padding:7px 10px;min-height:34px;font-size:12.5px">EN</button>
   <button id="next" disabled>换一个 ▸</button>
 </header>
 <div id="log"></div>
@@ -268,7 +269,6 @@ const PAGE = `<!doctype html>
   <input type="file" id="file" accept="image/*" style="display:none">
   <button id="pic" disabled title="发图片" style="padding:11px 12px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="9" r="1.5" fill="currentColor" stroke="none"/><path d="M21 15l-5-5L5 21"/></svg></button>
   <button id="send" class="p" disabled>发送</button>
-  <button id="rep" disabled title="举报">⚑</button>
 </footer>
 
 <div id="lb"><img id="lbi" alt=""></div>
@@ -291,6 +291,84 @@ const $ = s => document.querySelector(s);
 const log = $('#log'), stat = $('#stat'), input = $('#in');
 let ws = null, joined = false, inChat = false, mode = 'one', myTag = 0, groupSize = 0;
 
+// ---------- 中英双语 ----------
+const STR = {
+  zh: {
+    brand: '匿名聊天', next: '换一个 ▸', langBtn: 'EN',
+    in: '说点什么…', send: '发送', pic: '发图片', rep: '举报',
+    st_connecting: '连接中…', st_queue: '排队中', st_chat: '聊天中', st_group: '群聊中',
+    st_off: '离线', st_reconnect: '重连中…', st_joining: '凑人中…', st_hall: '群聊中 · {n} 人',
+    gate_h: '18+ · 匿名 · 不留痕',
+    gate_p: '随机配到陌生人聊天，文字和图片都行。平时什么都不存；只有出现举报时，才会把该会话最近记录和双方 IP 哈希保存 7 天。',
+    gate_ok: '我已满 18 岁，并理解这是一个无人实时审核的空间，可能遇到令人不适的内容。',
+    gate_go: '进入', gate_tip: '请守规矩。违法内容会导致整个服务被关停。',
+    m_one: '一对一', m_one_s: '私聊一个人', m_group: '群聊', m_group_s: '所有人一个群',
+    searching: '正在寻找陌生人…', entering: '正在进入大厅…', matched: '已配对 —— 打个招呼吧',
+    room_join: '已进入大厅，当前 {n} 人（你是陌生人 {t}）',
+    loading_hist: '正在加载最近的聊天记录…', hist_head: '—— 以下是最近 3 天的聊天记录 ——', hist_tail: '—— 以上是之前的聊天 ——',
+    sys_join: '陌生人 {n} 加入了', sys_part: '陌生人 {n} 离开了', img_ph: '陌生人 {n}：[图片]',
+    left: '对方离开了，点右上角「换一个」', reported: '已举报，已提交管理员审核',
+    disc: '连接断开，{s} 秒后自动重连…（已重连 {c} 次）', offline: '连接已断开',
+    err_notconn: '未连接', err_net: '网络异常', err_fast: '发太快了，慢一点', err_link: '这里不允许发链接',
+    err_imgfast: '图片发太快了', err_imgbig: '图片太大', err_badimg: '图片格式不支持', err_onlyimg: '只能发图片',
+    err_process: '图片处理失败', err_toobig: '图片太大，换一张小点的', who: '陌生人 {n}',
+    rep_q: '举报这条消息？管理员会看到这条内容和上下文。',
+    rep_ask: '要举报某一条具体消息：手机长按那条消息、电脑把鼠标移到消息上点右上角 ⚑。先点「取消」，然后长按/悬停选具体那条。',
+    rep_title: '举报这条消息',
+  },
+  en: {
+    brand: 'anon chat', next: 'next ▸', langBtn: '中文',
+    in: 'say something…', send: 'send', pic: 'send image', rep: 'report',
+    st_connecting: 'connecting…', st_queue: 'waiting', st_chat: 'in chat', st_group: 'in lobby',
+    st_off: 'offline', st_reconnect: 'reconnecting…', st_joining: 'joining…', st_hall: 'lobby · {n} online',
+    gate_h: '18+ · anonymous · no logs',
+    gate_p: 'You will be paired with a random stranger, text and images. Nothing is stored by default; only when someone reports, the last messages and both IP hashes are kept for 7 days.',
+    gate_ok: 'I am 18 or older and understand this is an unmoderated space where I may see unpleasant content.',
+    gate_go: 'enter', gate_tip: 'Be decent. Anything illegal gets the whole service shut down.',
+    m_one: '1-on-1', m_one_s: 'chat with one person', m_group: 'lobby', m_group_s: 'everyone together',
+    searching: 'looking for a stranger…', entering: 'entering the lobby…', matched: 'matched — say hi',
+    room_join: 'joined the lobby, {n} online (you are stranger {t})',
+    loading_hist: 'loading recent messages…', hist_head: '—— recent messages (last 3 days) ——', hist_tail: '—— end of history ——',
+    sys_join: 'stranger {n} joined', sys_part: 'stranger {n} left', img_ph: 'stranger {n}: [image]',
+    left: 'stranger left — tap "next" in the corner', reported: 'reported — sent to the moderator',
+    disc: 'disconnected, reconnecting in {s}s… (attempt {c})', offline: 'disconnected',
+    err_notconn: 'not connected', err_net: 'network error', err_fast: 'slow down', err_link: 'links are not allowed here',
+    err_imgfast: 'sending images too fast', err_imgbig: 'image too large', err_badimg: 'unsupported image format', err_onlyimg: 'images only',
+    err_process: 'image processing failed', err_toobig: 'image too large, pick a smaller one', who: 'stranger {n}',
+    rep_q: 'Report this message? The moderator will see it with its context.',
+    rep_ask: 'To report one specific message: long-press it on mobile, or hover and click the ⚑ in the corner on desktop. Press Cancel, then pick that message.',
+    rep_title: 'report this message',
+  },
+};
+let LANG = (function () {
+  try { const s = localStorage.getItem('anonchat:lang'); if (s === 'zh' || s === 'en') return s; } catch (e) {}
+  return String(navigator.language || '').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en';
+})();
+function T(k, vars) {
+  let s = (STR[LANG] && STR[LANG][k] !== undefined) ? STR[LANG][k] : k;
+  if (vars) for (const p in vars) s = s.split('{' + p + '}').join(vars[p]);
+  return s;
+}
+function applyLang() {
+  document.documentElement.lang = (LANG === 'zh' ? 'zh-CN' : 'en');
+  document.title = T('brand');
+  $('#brand').textContent = T('brand');
+  $('#lang').textContent = T('langBtn');
+  $('#next').textContent = T('next');
+  input.placeholder = T('in');
+  $('#send').textContent = T('send');
+  $('#pic').title = T('pic');
+  $('#m-one').innerHTML = T('m_one') + '<small>' + T('m_one_s') + '</small>';
+  $('#m-group').innerHTML = T('m_group') + '<small>' + T('m_group_s') + '</small>';
+  $('#gate').querySelector('h1').textContent = T('gate_h');
+  $('#gate').querySelector('p').innerHTML = T('gate_p');
+  $('#gate').querySelector('label span').innerHTML = T('gate_ok');
+  $('#go').textContent = T('gate_go');
+  $('#gate').querySelector('.tip').textContent = T('gate_tip');
+  if (!inChat) stat.textContent = T('st_connecting');
+}
+function setLang(l) { LANG = l; try { localStorage.setItem('anonchat:lang', l); } catch (e) {} applyLang(); }
+
 // 上次来过且确认过年龄 → 刷新后直接回到聊天（换模式请点页面顶部的「换一个」或清站点数据）
 (function autoResume(){
   let age = null, md = null;
@@ -303,6 +381,7 @@ let ws = null, joined = false, inChat = false, mode = 'one', myTag = 0, groupSiz
   }
 })();
 
+$('#lang').addEventListener('click', () => setLang(LANG === 'zh' ? 'en' : 'zh'));
 $('#m-one').addEventListener('click', () => { mode = 'one'; $('#m-one').classList.add('on'); $('#m-group').classList.remove('on'); });
 $('#m-group').addEventListener('click', () => { mode = 'group'; $('#m-group').classList.add('on'); $('#m-one').classList.remove('on'); });
 $('#ok').addEventListener('change', e => { $('#go').disabled = !e.target.checked; });
@@ -333,8 +412,8 @@ function askReport(id){
   if (!inChat) return;
   if (confirm('举报这条消息？管理员会看到这条内容和上下文。')) send({ t: 'report', id });
 }
-function msg(t, me, from, id){ const d = el(me?'me':'you'); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent='陌生人 '+from; d.appendChild(w); } d.appendChild(document.createTextNode(t)); attachReport(d, id); return d; }
-function img(src, me, from, id){ const d = el(me?'me':'you',''); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent='陌生人 '+from; d.appendChild(w); }
+function msg(t, me, from, id){ const d = el(me?'me':'you'); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent=T('who',{n:from}); d.appendChild(w); } d.appendChild(document.createTextNode(t)); attachReport(d, id); return d; }
+function img(src, me, from, id){ const d = el(me?'me':'you',''); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent=T('who',{n:from}); d.appendChild(w); }
   const i = new Image(); i.src = src;
   i.addEventListener('click', () => { $('#lbi').src = src; $('#lb').classList.add('on'); }); d.appendChild(i); attachReport(d, id); return d; }
 $('#lb').addEventListener('click', () => { $('#lb').classList.remove('on'); $('#lbi').src=''; });
@@ -343,7 +422,7 @@ function setState(s){
   stat.textContent = s;
   const on = s === '聊天中' || s === '群聊中';
   input.disabled = !on; $('#send').disabled = !on; $('#pic').disabled = !on;
-  $('#next').disabled = !joined; $('#rep').disabled = !on;
+  $('#next').disabled = !joined;
   inChat = on;
 }
 
@@ -361,52 +440,53 @@ function connect(){
   ws.onopen = () => {
     reconnectTry = 0;
     joined = true; ws.send(JSON.stringify({t:'join', mode}));
-    setState(mode === 'group' ? '凑人中…' : '排队中');
-    sys(mode === 'group' ? '正在进入大厅…' : '正在寻找陌生人…');
+    setState(mode === 'group' ? 'st_joining' : 'st_queue');
+    sys(mode === 'group' ? T('entering') : T('searching'));
     startHeartbeat();
   };
   ws.onmessage = e => {
     let m; try { m = JSON.parse(e.data); } catch { return; }
-    if (m.t === 'waiting') { sys(mode === 'group' ? '正在凑人开一间群聊…' : '正在寻找陌生人…'); setState(mode === 'group' ? '凑人中…' : '排队中'); }
-    else if (m.t === 'matched') { sys('已配对 —— 打个招呼吧'); setState('聊天中'); }
+    if (m.t === 'waiting') { sys(mode === 'group' ? T('entering') : T('searching')); setState(mode === 'group' ? 'st_joining' : 'st_queue'); }
+    else if (m.t === 'matched') { sys(T('matched')); setState('st_chat'); }
     else if (m.t === 'room') {
       myTag = m.tag || 0; groupSize = m.n || 0;
-      sys('已进入大厅，当前 ' + groupSize + ' 人（你是陌生人 ' + myTag + '）');
-      loadTipEl = el('sys', '正在加载最近的聊天记录…');
-      setState('群聊中');
+      sys(T('room_join', { n: groupSize, t: myTag }));
+      loadTipEl = el('sys', T('loading_hist'));
+      setState('st_group');
     }
-    else if (m.t === 'roominfo') { groupSize = m.n || groupSize; stat.textContent = '群聊中 · ' + groupSize + ' 人'; }
+    else if (m.t === 'roominfo') { groupSize = m.n || groupSize; stat.textContent = T('st_hall', { n: groupSize }); }
     else if (m.t === 'msg') { msg(m.v, false, m.from, m.id); }
     else if (m.t === 'img') { img(m.v, false, m.from, m.id); }
     else if (m.t === 'history') {
       if (loadTipEl) { try { loadTipEl.remove(); } catch (e) {} loadTipEl = null; }
       if (m.items && m.items.length) {
-        sys('—— 以下是最近 3 天的聊天记录 ——');
+        sys(T('hist_head'));
         m.items.forEach(it => {
           if (it.k === 'text') msg(it.v, false, it.from, it.id);
           else if (it.k === 'img') img(it.v, false, it.from, it.id);
-          else sys('陌生人 ' + it.from + '：[图片]');
+          else sys(T('img_ph', { n: it.from }));
         });
-        sys('—— 以上是之前的聊天 ——');
+        sys(T('hist_tail'));
       }
     }
-    else if (m.t === 'left') { sys('对方离开了，点右上角「换一个」'); setState('排队中'); }
-    else if (m.t === 'reported') { sys('已举报，已提交管理员审核'); }
+    else if (m.t === 'left') { sys(T('left')); setState(mode === 'group' ? 'st_joining' : 'st_queue'); }
+    else if (m.t === 'reported') { sys(T('reported')); }
     else if (m.t === 'err') { sys(m.v); }
+    else if (m.t === 'sys') { sys(m.k ? T('sys_' + m.k, { n: m.n }) : (m.v || '')); }
     else if (m.t === 'pong') {}
   };
   ws.onclose = () => {
     joined = false;
-    if (!autoReconnect) { setState('离线'); return; }
+    if (!autoReconnect) { setState('st_off'); return; }
     reconnectTry++;
     const wait = Math.min(8000, 800 * Math.pow(1.7, Math.min(reconnectTry, 6)));
-    setState('重连中…');
-    sys('连接断开，' + Math.round(wait / 1000) + ' 秒后自动重连…（已重连 ' + reconnectTry + ' 次）');
+    setState('st_reconnect');
+    sys(T('disc', { s: Math.round(wait / 1000), c: reconnectTry }));
     reconnectTimer = setTimeout(connect, wait);
   };
   ws.onerror = () => {};
 }
-function send(o){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); else sys('未连接'); }
+function send(o){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); else sys(T('err_notconn')); }
 
 function newId(){ return 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 function sendText(){
@@ -418,14 +498,9 @@ $('#send').addEventListener('click', sendText);
 input.addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
 $('#next').addEventListener('click', () => {
   log.innerHTML = ''; loadTipEl = null;
-  sys(mode === 'group' ? '重新进入大厅…' : '换人中…');
+  sys(mode === 'group' ? T('entering') : T('searching'));
   send({t: 'skip'});
   setState(mode === 'group' ? '凑人中…' : '排队中');
-});
-$('#rep').addEventListener('click', () => {
-  if (!inChat) return;
-  if (!confirm('要举报某一条具体消息：手机长按那条消息、电脑把鼠标移到消息上点右上角 ⚑。' + String.fromCharCode(10) + String.fromCharCode(10) + '点「确定」则举报整个会话（不带具体消息），点「取消」回去选具体那条。')) return;
-  send({t: 'report'});
 });
 $('#pic').addEventListener('click', () => $('#file').click());
 
@@ -433,13 +508,13 @@ $('#pic').addEventListener('click', () => $('#file').click());
 $('#file').addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; e.target.value = '';
   if (!f) return;
-  if (!f.type.startsWith('image/')) { sys('只能发图片'); return; }
+  if (!f.type.startsWith('image/')) { sys(T('err_onlyimg')); return; }
   try {
     const d = await compress(f);
-    if (d.length > 320000) { sys('图片太大，换一张小点的'); return; }
+    if (d.length > 320000) { sys(T('err_toobig')); return; }
     const id = newId();
     img(d, true, 0, id); send({t:'img', v:d, id});
-  } catch { sys('图片处理失败'); }
+  } catch { sys(T('err_process')); }
 });
 
 function compress(file){
@@ -758,7 +833,7 @@ export class Lobby {
     conn.room = h; h.members.add(conn);
     this.send(conn, { t: 'room', tag: conn.tag, n: h.members.size });
     try { this.state.waitUntil(this.sendHallHistory(conn)); } catch {}
-    this.hallBroadcast({ t: 'sys', v: '陌生人 ' + conn.tag + ' 加入了' }, conn);
+    this.hallBroadcast({ t: 'sys', k: 'join', n: conn.tag }, conn);
     this.hallInfo();
     this.scheduleCleanup();
   }
@@ -791,7 +866,7 @@ export class Lobby {
     const h = conn.room; conn.room = null;
     if (!h || !h.members) return;
     h.members.delete(conn);
-    if (h.members.size > 0) { this.hallBroadcast({ t: 'sys', v: '陌生人 ' + conn.tag + ' 离开了' }); this.hallInfo(); }
+    if (h.members.size > 0) { this.hallBroadcast({ t: 'sys', k: 'part', n: conn.tag }); this.hallInfo(); }
   }
 
   // 落盘一条聊天记录（key 按时间戳有序，过期由 alarm 清）
