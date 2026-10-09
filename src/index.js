@@ -68,8 +68,20 @@ const ADMIN_PAGE = `<!doctype html>
   #bigimg img{max-width:100%;max-height:100%;border-radius:8px}
 </style></head>
 <body>
+<div id="login">
+  <div class="lbox">
+    <h1 style="margin:0 0 6px;font-size:17px">匿名聊天 · 管理后台</h1>
+    <p class="meta" style="margin:0 0 14px">输入管理密钥进入。密钥只存在这台设备的浏览器里，不会出现在地址栏。</p>
+    <input id="lkey" type="password" placeholder="管理密钥" autocomplete="current-password" style="width:100%;background:#151a24;border:1px solid #232a3a;color:#e8eaed;border-radius:10px;padding:12px;font:inherit">
+    <label style="display:flex;gap:8px;align-items:center;margin:12px 0 14px;font-size:13px">
+      <input type="checkbox" id="lremember" checked style="width:18px;height:18px;accent-color:#2b5cff"> 在这台设备上记住
+    </label>
+    <button id="lgo" class="p" style="width:100%">进入</button>
+    <div id="lerr" style="color:#ffb4c0;font-size:13px;margin-top:10px;min-height:18px"></div>
+  </div>
+</div>
 <h1>匿名聊天 · 管理
-  <button id="chkey" style="margin-left:auto;font-size:12px;padding:6px 10px;min-height:34px">换密钥</button>
+  <button id="chkey" style="margin-left:auto;font-size:12px;padding:6px 10px;min-height:34px">退出</button>
   <button id="rf">刷新</button></h1>
 <div class="card"><div class="kv" id="kv"></div>
   <div class="row">
@@ -107,22 +119,41 @@ var K = (function () {
            return u; }
   try { return localStorage.getItem('anonchat:adminkey') || ''; } catch (e) { return ''; }
 })();
-function askKey() {
-  var v = prompt('请输入管理密钥（只保存在本机浏览器里，不会出现在地址栏）');
-  if (v) { try { localStorage.setItem('anonchat:adminkey', v); } catch (e) {} location.reload(); }
+function showLogin(msg) {
+  var el = document.getElementById('login');
+  el.classList.add('on');
+  document.getElementById('lerr').textContent = msg || '';
+  setTimeout(function(){ try { document.getElementById('lkey').focus(); } catch (e) {} }, 60);
 }
+function hideLogin() { document.getElementById('login').classList.remove('on'); }
+function askKey() { showLogin(''); }
+(function bindLogin(){
+  var inp = document.getElementById('lkey'), err = document.getElementById('lerr');
+  function submit(){
+    var v = inp.value.trim();
+    if (!v) { err.textContent = '请输入密钥'; return; }
+    K = v;
+    api('data?limit=1').then(function(){ 
+      try { if (document.getElementById('lremember').checked) localStorage.setItem('anonchat:adminkey', v); else localStorage.removeItem('anonchat:adminkey'); } catch (e) {}
+      document.getElementById('lerr').textContent = ''; hideLogin(); load();
+    }).catch(function(){ err.textContent = '密钥不对'; K = ''; });
+  }
+  document.getElementById('lgo').onclick = submit;
+  inp.addEventListener('keydown', function(e){ if (e.key === 'Enter') submit(); });
+})();
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
 function say(t){ document.getElementById('msg').textContent = t; setTimeout(function(){ document.getElementById('msg').textContent = ''; }, 4000); }
 async function api(p){ var r = await fetch('/admin/' + p, { headers: { 'x-admin-key': K } }); if (!r.ok) throw new Error(r.status); return r.json(); }
-var OFFSET = 0, LIMIT = 20, Q = '';
+var OFFSET = 0, LIMIT = 20, Q = '', SEQ = 0;
 async function load(){
-  var d;
+  var d, my = ++SEQ;
   try { d = await api('data?offset=' + OFFSET + '&limit=' + LIMIT + '&q=' + encodeURIComponent(Q)); }
   catch (e) {
-    document.body.innerHTML = '<div style="padding:20px;color:#ffb4c0">密钥不对或已失效（HTTP ' + esc(e.message) + '）'
-      + '<div style="margin-top:12px"><button onclick="askKey()">输入 / 更换密钥</button></div></div>';
-    return;
+    if (my !== SEQ) return;                                  // 已被更新的请求取代，忽略
+    try { localStorage.removeItem('anonchat:adminkey'); } catch (x) {}
+    K = ''; showLogin('密钥无效或已失效，请重新输入'); return;
   }
+  if (my !== SEQ) return;
   document.getElementById('kv').innerHTML =
       '<div><b>' + d.hall + '</b><span>大厅在线</span></div>'
     + '<div><b>' + d.queue + '</b><span>1v1 排队</span></div>'
@@ -278,9 +309,9 @@ document.getElementById('onlynew').addEventListener('change', function(){ OFFSET
   qi.addEventListener('input', function(){ clearTimeout(tm); tm = setTimeout(function(){ Q = qi.value.trim(); OFFSET = 0; load(); }, 350); });
   qi.addEventListener('keydown', function(e){ if (e.key === 'Enter') { clearTimeout(tm); Q = qi.value.trim(); OFFSET = 0; load(); } });
 })();
-document.getElementById('rf').onclick = load;
-document.getElementById('chkey').onclick = askKey;
-if (!K) askKey();
+document.getElementById('rf').onclick = function(){ load(); };
+document.getElementById('chkey').onclick = function(){ K = ''; try { localStorage.removeItem('anonchat:adminkey'); } catch (e) {} showLogin('已退出，请重新输入密钥'); };
+if (!K) showLogin(''); else load();
 document.getElementById('reset').onclick = async function(){ if (confirm('确定踢掉所有连接？')) { var r = await api('reset'); say('已清场，踢掉 ' + r.kicked + ' 人'); load(); } };
 document.getElementById('clr').onclick = async function(){ if (confirm('确定清空所有举报记录？')) { var r = await api('clearreports'); say('已清空 ' + r.deleted + ' 条'); load(); } };
 load();
@@ -365,6 +396,10 @@ const PAGE = `<!doctype html>
   .rsum{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
   .rchip{display:inline-flex;align-items:center;gap:3px;font-size:12.5px;background:#232a3a;color:#c3c9d6;
          border-radius:9px;padding:2px 7px;line-height:1.5}
+  #login{position:fixed;inset:0;background:#0b0d12;display:none;align-items:center;justify-content:center;z-index:40;padding:18px}
+  #login.on{display:flex}
+  #login .lbox{width:100%;max-width:380px;background:#0f1219;border:1px solid #1d2230;border-radius:16px;padding:20px}
+  button.p{background:#2b5cff;border-color:#2b5cff;color:#fff}
   .rbtn2{position:absolute;top:3px;right:58px;display:block;height:19px;min-height:19px;padding:0 7px;line-height:17px;
          border-radius:10px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.32);color:#e8eaed;
          font-size:11px;cursor:pointer;opacity:.9}
@@ -1171,7 +1206,7 @@ export class Lobby3 {
       const bl = await this.dbList({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-2130', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261009-2210', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000),
         reports: page, reports_total: filtered.length, reports_all: arr.length, offset: off, limit: lim, q,
         bans,
