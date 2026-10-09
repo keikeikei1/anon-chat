@@ -5,13 +5,32 @@
   "compatibility_date": "2026-10-01",
   "ai": { "binding": "AI" },
   "durable_objects": {
-    "bindings": [{ "name": "LOBBY", "class_name": "Lobby2" }]
+    "bindings": [
+      {
+        "name": "LOBBY",
+        "class_name": "Lobby3"
+      }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Lobby"] }, { "tag": "v2", "renamed_classes": [{ "from": "Lobby", "to": "Lobby2" }] }],
-  "routes": [{ "pattern": "anon-chat.example.com", "custom_domain": true }],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Lobby"
+      ]
+    }, { "tag": "v2", "renamed_classes": [{ "from": "Lobby", "to": "Lobby2" }] }, { "tag": "v3", "renamed_classes": [{ "from": "Lobby2", "to": "Lobby3" }] }
+  ],
+  "routes": [
+    {
+      "pattern": "anon-chat.example.com",
+      "custom_domain": true
+    }
+  ],
   "vars": {
     "ADMIN_KEY": "CHANGE_ME_random_admin_key",
-    "IP_SALT": "CHANGE_ME_random_salt"
+    "IP_SALT": "CHANGE_ME_random_ip_salt"
   },
-  "observability": { "enabled": true }
+  "observability": {
+    "enabled": true
+  }
 }

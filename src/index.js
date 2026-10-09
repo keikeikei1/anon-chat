@@ -25,7 +25,10 @@ const HISTORY_IMG_MAX = 2;         // 历史里最多重发 2 张图，更早的
 const HISTORY_IMG_TTL_MS = 24 * 3600 * 1000;  // 图片只保留 1 天（比文字短）
 const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须 > 心跳间隔）
 const BLOCK_WORDS = ['http://', 'https://', 'www.'];  // 挡外链，防广告/钓鱼
-const IMG_PLACEHOLDER = '…(图，已省略)';   // 缓冲里图片只留占位，完整图不进每人的内存
+const IMG_PLACEHOLDER = '…(图，已省略)';
+// DO 实例身份由 idFromName 的 name 决定：改了 DO 代码而不换 name，实例会一直粘着旧代码。
+// 所以「部署后行为没变」时，把 DO_NAME 加个后缀就是最可靠的生效手段（旧 name 的数据仍可读）。
+const DO_NAME = 'main4';   // 缓冲里图片只留占位，完整图不进每人的内存
 
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -77,8 +80,10 @@ const ADMIN_PAGE = `<!doctype html>
   <label style="margin:0;font-size:13px;display:flex;gap:8px;align-items:center">
     <input type="checkbox" id="onlynew" style="width:18px;height:18px;accent-color:#2b5cff"> 只看未处理
   </label>
+  <input id="q" placeholder="搜索（IP 哈希 / 内容 / 时间）" style="flex:1;min-width:180px;background:#151a24;border:1px solid #232a3a;color:#e8eaed;border-radius:10px;padding:9px 12px;font:inherit">
   <span class="meta" id="cnt2" style="margin:0"></span>
 </div>
+<div class="row" id="pager" style="margin:-4px 0 10px"></div>
 <div id="list"></div>
 <div id="bigimg"><img id="bigimgi" alt=""></div>
 <h2>机器人 / API（同一个 key，可给外部程序用）</h2>
@@ -97,9 +102,10 @@ var K = new URLSearchParams(location.search).get('key') || '';
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
 function say(t){ document.getElementById('msg').textContent = t; setTimeout(function(){ document.getElementById('msg').textContent = ''; }, 4000); }
 async function api(p){ var r = await fetch('/admin/' + p + (p.indexOf('?') >= 0 ? '&' : '?') + 'key=' + encodeURIComponent(K)); if (!r.ok) throw new Error(r.status); return r.json(); }
+var OFFSET = 0, LIMIT = 20, Q = '';
 async function load(){
   var d;
-  try { d = await api('data'); }
+  try { d = await api('data?offset=' + OFFSET + '&limit=' + LIMIT + '&q=' + encodeURIComponent(Q)); }
   catch (e) { document.body.innerHTML = '<p style="padding:20px;color:#ffb4c0">密钥不对或已失效（HTTP ' + esc(e.message) + '）</p>'; return; }
   document.getElementById('kv').innerHTML =
       '<div><b>' + d.hall + '</b><span>大厅在线</span></div>'
@@ -110,10 +116,22 @@ async function load(){
     + '<div><b>' + ((d.bans || []).length) + '</b><span>封禁中</span></div>';
   var onlyNew = document.getElementById('onlynew').checked;
   var shown = onlyNew ? d.reports.filter(function(x){ return !x.handled; }) : d.reports;
-  document.getElementById('rh').textContent = '举报记录（' + d.reports.length + '）';
-  document.getElementById('cnt2').textContent = onlyNew ? ('只看未处理：' + shown.length + ' 条') : '';
+  var total = (d.reports_total === undefined ? d.reports.length : d.reports_total);
+  var all = (d.reports_all === undefined ? total : d.reports_all);
+  document.getElementById('rh').textContent = '举报记录（' + total + (Q ? ' / 共 ' + all : '') + '）';
+  document.getElementById('cnt2').textContent = onlyNew ? ('本页未处理：' + shown.length + ' 条') : ('本页 ' + shown.length + ' 条');
+  var pages = Math.max(1, Math.ceil(total / LIMIT)), cur = Math.floor(OFFSET / LIMIT) + 1;
+  document.getElementById('pager').innerHTML =
+      '<button id="pprev"' + (OFFSET <= 0 ? ' disabled' : '') + '>‹ 上一页</button>'
+    + '<span class="meta" style="margin:0">第 ' + cur + ' / ' + pages + ' 页</span>'
+    + '<button id="pnext"' + (OFFSET + LIMIT >= total ? ' disabled' : '') + '>下一页 ›</button>'
+    + '<button id="plast">跳到最新</button>';
+  var pv = document.getElementById('pprev'), nx = document.getElementById('pnext'), ls = document.getElementById('plast');
+  if (pv) pv.onclick = function(){ OFFSET = Math.max(0, OFFSET - LIMIT); load(); };
+  if (nx) nx.onclick = function(){ OFFSET = OFFSET + LIMIT; load(); };
+  if (ls) ls.onclick = function(){ OFFSET = 0; load(); };
   var h = '';
-  if (!shown.length) h = '<div class="empty">' + (onlyNew ? '没有未处理的举报了 🎉' : '暂无举报记录（平时不落盘，只有举报时才存）') + '</div>';
+  if (!shown.length) h = '<div class="empty">' + (Q ? '没有匹配「' + esc(Q) + '」的记录' : (onlyNew ? '本页没有未处理的举报了 🎉' : '暂无举报记录（平时不落盘，只有举报时才存）')) + '</div>';
   for (var i = 0; i < shown.length; i++) {
     var r = shown[i], lines = '';
     (r.msgs || []).forEach(function(m){ lines += (m.tag ? '陌生人' + m.tag : (m.me ? '我' : '对方')) + '：' + esc(String(m.v || '').slice(0, 400)) + String.fromCharCode(10); });
@@ -234,7 +252,12 @@ document.getElementById('copyapi').onclick = function(){
     });
   } catch (e) { document.getElementById('apimsg').textContent = '复制失败，手动选中吧'; }
 };
-document.getElementById('onlynew').addEventListener('change', load);
+document.getElementById('onlynew').addEventListener('change', function(){ OFFSET = 0; load(); });
+(function(){
+  var qi = document.getElementById('q'), tm = null;
+  qi.addEventListener('input', function(){ clearTimeout(tm); tm = setTimeout(function(){ Q = qi.value.trim(); OFFSET = 0; load(); }, 350); });
+  qi.addEventListener('keydown', function(e){ if (e.key === 'Enter') { clearTimeout(tm); Q = qi.value.trim(); OFFSET = 0; load(); } });
+})();
 document.getElementById('rf').onclick = load;
 document.getElementById('reset').onclick = async function(){ if (confirm('确定踢掉所有连接？')) { var r = await api('reset'); say('已清场，踢掉 ' + r.kicked + ' 人'); load(); } };
 document.getElementById('clr').onclick = async function(){ if (confirm('确定清空所有举报记录？')) { var r = await api('clearreports'); say('已清空 ' + r.deleted + ' 条'); load(); } };
@@ -306,6 +329,7 @@ const PAGE = `<!doctype html>
 <header>
   <b id="brand">匿名聊天</b><span id="stat">连接中…</span>
   <button id="lang" title="switch language" style="margin-left:auto;padding:7px 10px;min-height:34px;font-size:12.5px">EN</button>
+  <button id="toGroup" style="display:none">群聊 ▸</button>
   <button id="next" disabled>换一个 ▸</button>
 </header>
 <div id="log"></div>
@@ -348,6 +372,7 @@ const STR = {
     gate_ok: '我已满 18 岁，并理解这是一个无人实时审核的空间，可能遇到令人不适的内容。',
     gate_go: '进入', gate_tip: '请守规矩。违法内容会导致整个服务被关停。',
     m_one: '一对一', m_one_s: '私聊一个人', m_group: '群聊', m_group_s: '所有人一个群',
+    to_group: '群聊 ▸',
     searching: '正在寻找陌生人…', entering: '正在进入大厅…', matched: '已配对 —— 打个招呼吧',
     room_join: '已进入大厅，当前 {n} 人（你是陌生人 {t}）',
     loading_hist: '正在加载最近的聊天记录…', hist_head: '—— 以下是最近 3 天的聊天记录 ——', hist_tail: '—— 以上是之前的聊天 ——',
@@ -371,6 +396,7 @@ const STR = {
     gate_ok: 'I am 18 or older and understand this is an unmoderated space where I may see unpleasant content.',
     gate_go: 'enter', gate_tip: 'Be decent. Anything illegal gets the whole service shut down.',
     m_one: '1-on-1', m_one_s: 'chat with one person', m_group: 'lobby', m_group_s: 'everyone together',
+    to_group: 'lobby ▸',
     searching: 'looking for a stranger…', entering: 'entering the lobby…', matched: 'matched — say hi',
     room_join: 'joined the lobby, {n} online (you are stranger {t})',
     loading_hist: 'loading recent messages…', hist_head: '—— recent messages (last 3 days) ——', hist_tail: '—— end of history ——',
@@ -400,6 +426,7 @@ function applyLang() {
   $('#brand').textContent = T('brand');
   $('#lang').textContent = T('langBtn');
   $('#next').textContent = T('next');
+  $('#toGroup').textContent = T('to_group');
   input.placeholder = T('in');
   $('#send').textContent = T('send');
   $('#pic').title = T('pic');
@@ -470,6 +497,8 @@ function setState(key, vars){
   $('#next').disabled = !joined;
   // 群聊里没有「换一个」的意义，改成「切成一对一」，免得住进来就出不去
   $('#next').textContent = (mode === 'group') ? T('to_one') : T('next');
+  // 一对一时给一条去群聊的路（群聊里则由 #next 变成「切成一对一」，两个方向都通）
+  $('#toGroup').style.display = (mode === 'group' || !on) ? 'none' : '';
   inChat = on;
 }
 
@@ -543,6 +572,14 @@ function sendText(){
 }
 $('#send').addEventListener('click', sendText);
 input.addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
+$('#toGroup').addEventListener('click', () => {
+  mode = 'group'; remember('mode', 'group');
+  $('#m-group').classList.add('on'); $('#m-one').classList.remove('on');
+  log.innerHTML = ''; loadTipEl = null;
+  sys(T('entering'));
+  send({t: 'join', mode: 'group'});            // 直接声明目标模式，服务端会先解掉旧的配对
+  setState('st_joining');
+});
 $('#next').addEventListener('click', () => {
   // 群聊里这个按钮 = 换成一对一（否则进来就出不去了）
   if (mode === 'group') {
@@ -551,7 +588,7 @@ $('#next').addEventListener('click', () => {
   }
   log.innerHTML = ''; loadTipEl = null;
   sys(mode === 'group' ? T('entering') : T('searching'));
-  send({t: 'skip'});
+  send(mode === 'group' ? {t: 'join', mode: 'group'} : {t: 'skip'});
   setState(mode === 'group' ? 'st_joining' : 'st_queue');
 });
 $('#pic').addEventListener('click', () => $('#file').click());
@@ -594,7 +631,7 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     if (url.pathname === '/ws') {
-      return env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(req);
+      return env.LOBBY.get(env.LOBBY.idFromName(DO_NAME)).fetch(req);
     }
     const adminKey = url.searchParams.get('key') || '';
     const isAdmin = !!env.ADMIN_KEY && adminKey === env.ADMIN_KEY;
@@ -608,7 +645,7 @@ export default {
         { status: 403, headers: { 'content-type': 'application/json;charset=utf-8' } });
       const limit = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit') || '20', 10) || 20));
       const onlyNew = url.searchParams.get('status') !== 'all';
-      const d = await env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(new Request('https://do/stats'));
+      const d = await env.LOBBY.get(env.LOBBY.idFromName(DO_NAME)).fetch(new Request('https://do/stats'));
       const js = await d.json();
       let items = js.reports || [];
       if (onlyNew) items = items.filter(r => !r.handled);
@@ -628,7 +665,7 @@ export default {
       const iph = url.searchParams.get('iph') || '';
       const hours = url.searchParams.get('hours') || url.searchParams.get('h') || '168';
       const by = (url.searchParams.get('by') || 'external').slice(0, 40);
-      const stub = env.LOBBY.get(env.LOBBY.idFromName('global'));
+      const stub = env.LOBBY.get(env.LOBBY.idFromName(DO_NAME));
       let ep = null;
       if (action === 'ban') ep = '/ban?iph=' + encodeURIComponent(iph) + '&h=' + encodeURIComponent(hours);
       else if (action === 'unban') ep = '/unban?iph=' + encodeURIComponent(iph);
@@ -652,7 +689,7 @@ export default {
     if (url.pathname === '/admin/ai') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
       const k = url.searchParams.get('k') || '';
-      const rr = await env.LOBBY.get(env.LOBBY.idFromName('global'))
+      const rr = await env.LOBBY.get(env.LOBBY.idFromName(DO_NAME))
         .fetch(new Request('https://do/getreport?k=' + encodeURIComponent(k)));
       if (!rr.ok) return new Response('report not found', { status: 404 });
       const rec = await rr.json();
@@ -685,7 +722,7 @@ export default {
     }
     if (url.pathname === '/admin/image') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
-      return env.LOBBY.get(env.LOBBY.idFromName('global'))
+      return env.LOBBY.get(env.LOBBY.idFromName(DO_NAME))
         .fetch(new Request('https://do/reportimage?k=' + encodeURIComponent(url.searchParams.get('k') || '')));
     }
     if (url.pathname === '/admin/kick' || url.pathname === '/admin/handled' || url.pathname === '/admin/clearmessages') {
@@ -694,7 +731,7 @@ export default {
       const ep = what === 'kick'
         ? '/kick?iph=' + encodeURIComponent(url.searchParams.get('iph') || '')
         : '/' + what + '?k=' + encodeURIComponent(url.searchParams.get('k') || '');
-      return env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(new Request('https://do' + ep));
+      return env.LOBBY.get(env.LOBBY.idFromName(DO_NAME)).fetch(new Request('https://do' + ep));
     }
     if (url.pathname === '/admin/ban' || url.pathname === '/admin/unban') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
@@ -703,17 +740,48 @@ export default {
       const ep = url.pathname === '/admin/ban'
         ? '/ban?iph=' + encodeURIComponent(iph) + '&h=' + encodeURIComponent(hours)
         : '/unban?iph=' + encodeURIComponent(iph);
-      return env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(new Request('https://do' + ep));
+      return env.LOBBY.get(env.LOBBY.idFromName(DO_NAME)).fetch(new Request('https://do' + ep));
     }
     if (url.pathname === '/admin/data' || url.pathname === '/admin/clearreports') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
       const ep = url.pathname === '/admin/data' ? '/stats' : '/clearreports';
-      return env.LOBBY.get(env.LOBBY.idFromName('global')).fetch(new Request('https://do' + ep));
+      const qs = url.pathname === '/admin/data'
+        ? '?offset=' + encodeURIComponent(url.searchParams.get('offset') || '0')
+          + '&limit=' + encodeURIComponent(url.searchParams.get('limit') || '20')
+          + '&q=' + encodeURIComponent(url.searchParams.get('q') || '')
+        : '';
+      return env.LOBBY.get(env.LOBBY.idFromName(DO_NAME)).fetch(new Request('https://do' + ep + qs));
+    }
+    if (url.pathname === '/admin/olddata') {
+      if (!isAdmin) return new Response('forbidden', { status: 403 });
+      const nm = url.searchParams.get('do') || 'global';
+      return env.LOBBY.get(env.LOBBY.idFromName(nm)).fetch(new Request('https://do/stats?limit=100'));
+    }
+    if (url.pathname === '/admin/importold') {
+      // 一次性：把旧 DO 名字下的聊天历史 / 举报 / 封禁并进当前实例（幂等，同名 key 覆盖）
+      if (!isAdmin) return new Response('forbidden', { status: 403 });
+      const from = url.searchParams.get('do') || 'global';
+      const stub = env.LOBBY.get(env.LOBBY.idFromName(from));
+      const res = {};
+      for (const prefix of ['m:', 'report:', 'ban:']) {
+        const r = await stub.fetch(new Request('https://do/dump?prefix=' + encodeURIComponent(prefix)));
+        if (!r.ok) { res[prefix] = 'src ' + r.status; continue; }
+        const js = await r.json();
+        const entries = js.entries || [];
+        if (entries.length) {
+          await env.LOBBY.get(env.LOBBY.idFromName(DO_NAME)).fetch(new Request('https://do/load', {
+            method: 'POST', body: JSON.stringify({ entries }),
+          }));
+        }
+        res[prefix] = entries.length;
+      }
+      return new Response(JSON.stringify({ ok: true, from, imported: res }),
+        { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/admin/reset') {
       const key = url.searchParams.get('key') || '';
       if (!env.ADMIN_KEY || key !== env.ADMIN_KEY) return new Response('forbidden', { status: 403 });
-      return env.LOBBY.get(env.LOBBY.idFromName('global'))
+      return env.LOBBY.get(env.LOBBY.idFromName(DO_NAME))
         .fetch(new Request('https://do/reset', { headers: { 'x-admin': '1' } }));
     }
     if (url.pathname === '/admin/reports') {
@@ -729,7 +797,7 @@ export default {
   },
 };
 
-export class Lobby2 {
+export class Lobby3 {
   constructor(state, env) {
     this.state = state;
     this.env = env;
@@ -818,9 +886,26 @@ export class Lobby2 {
       return new Response(JSON.stringify({ ok: true, key, ...rec }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
+    if (url.pathname === '/dump') {
+      const prefix = url.searchParams.get('prefix') || 'm:';
+      const list = await this.state.storage.list({ prefix, limit: 1000 });
+      const entries = [...list].map(([k, v]) => ({ k, v }));
+      return new Response(JSON.stringify({ ok: true, count: entries.length, entries }),
+        { headers: { 'content-type': 'application/json;charset=utf-8' } });
+    }
+    if (url.pathname === '/load' && req.method === 'POST') {
+      let body; try { body = await req.json(); } catch { return new Response('{"ok":false}', { status: 400, headers: { 'content-type': 'application/json' } }); }
+      const entries = (body && body.entries) || [];
+      for (const e of entries) { if (e && e.k) await this.state.storage.put(e.k, e.v); }
+      return new Response(JSON.stringify({ ok: true, loaded: entries.length }),
+        { headers: { 'content-type': 'application/json;charset=utf-8' } });
+    }
     if (url.pathname === '/stats') {
+      const q = (url.searchParams.get('q') || '').trim().toLowerCase();
+      const off = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
+      const lim = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit') || '20', 10) || 20));
       const hall = this.hall ? [...this.hall.members].filter(c => this.alive(c)).length : 0;
-      const rep = await this.state.storage.list({ prefix: 'report:', limit: 200 });
+      const rep = await this.state.storage.list({ prefix: 'report:', limit: 1000 });
       const arr = [...rep].map(([k, v]) => {
         const o = { key: k, ...v };
         if (o.reported_msg && o.reported_msg.k === 'img' && typeof o.reported_msg.v === 'string' && o.reported_msg.v.length > 300) {
@@ -828,11 +913,15 @@ export class Lobby2 {
         }
         return o;
       }).sort((a, b) => (a.at < b.at ? 1 : -1));
+      const filtered = q ? arr.filter(r => JSON.stringify(r).toLowerCase().indexOf(q) >= 0) : arr;
+      const page = filtered.slice(off, off + lim);
       const bl = await this.state.storage.list({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-1908', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
-        retention_days: Math.round(HISTORY_TTL_MS / 86400000), reports: arr, bans,
+        build: 'b20261009-2005', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        retention_days: Math.round(HISTORY_TTL_MS / 86400000),
+        reports: page, reports_total: filtered.length, reports_all: arr.length, offset: off, limit: lim, q,
+        bans,
       }), { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/clearreports') {
@@ -1047,6 +1136,9 @@ export class Lobby2 {
     if (m.t === 'ping') { this.send(conn, { t: 'pong' }); return; }
 
     if (m.t === 'join') {
+      // 换模式：先把旧状态清干净（退大厅 / 解开配对），否则会同时挂在两个地方
+      if (conn.room) this.leaveHall(conn);
+      if (conn.peer || this.waiting === conn) this.unpair(conn, false);
       if (m.mode === 'group') this.joinHall(conn); else this.enqueue(conn);
       return;
     }
