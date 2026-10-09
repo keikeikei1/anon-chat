@@ -74,6 +74,15 @@ const ADMIN_PAGE = `<!doctype html>
   <span class="meta" id="cnt2" style="margin:0"></span>
 </div>
 <div id="list"></div>
+<h2>机器人 / API（同一个 key，可给外部程序用）</h2>
+<div class="card">
+  <div class="meta" style="margin:0 0 10px">把 &lt;KEY&gt; 换成地址栏里的 key，返回都是 JSON。</div>
+  <pre id="api-help"></pre>
+  <div class="row" style="margin-top:10px">
+    <button id="copyapi">复制接口说明</button>
+    <span class="ok" id="apimsg"></span>
+  </div>
+</div>
 <h2 id="bh">封禁列表</h2>
 <div id="bans"></div>
 <script>
@@ -110,14 +119,12 @@ async function load(){
       +  (r.content_cleared ? '<div class="meta">（聊天内容已清除）</div>' : '')
       +  (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：' + (r.reported_msg.tag ? ('陌生人 ' + esc(r.reported_msg.tag)) : '对方') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : '')
       +  (r.room_staff && r.room_staff.length ? '<div class="meta">当时在场：' + r.room_staff.map(function(s){ return '#' + s.tag; }).join(' ') + '</div>' : '')
-      +  '<div class="meta" id="ai-' + esc(r.key).replace(/[^a-zA-Z0-9]/g, '') + '"></div>'
       +  (lines ? '<pre>' + lines + '</pre>' : '')
       +  '<div class="row" style="margin-top:10px">'
       +    (r.reported_ip_hash ? '<button data-kick="' + esc(r.reported_ip_hash) + '">踢出（在线）</button>' : '')
       +    (r.reported_ip_hash ? '<button class="d" data-banh="' + esc(r.reported_ip_hash) + '" data-h="8" data-who="被举报方">封禁 8 小时</button>' : '')
       +    (r.reported_ip_hash ? '<button class="d" data-banh="' + esc(r.reported_ip_hash) + '" data-h="168" data-who="被举报方">封禁 7 天</button>' : '')
       +    (r.content_cleared ? '<span class="tag">聊天内容已清除</span>' : '<button data-clear="' + esc(r.key) + '">清除聊天内容</button>')
-      +    '<button data-ai="' + esc(r.key) + '">AI 审核</button>'
       +    (r.handled ? '<span class="tag">已忽略</span>' : '<button data-handled="' + esc(r.key) + '">忽略</button>')
       +  '</div>'
       +  '<div class="row" style="margin-top:8px">'
@@ -154,17 +161,6 @@ async function doClear(k){
   await api('clearmessages?k=' + encodeURIComponent(k));
   say('聊天内容已清除'); load();
 }
-async function doAI(k){
-  var box = document.getElementById('ai-' + k.replace(/[^a-zA-Z0-9]/g, ''));
-  if (box) box.textContent = 'AI 审核中…（几秒）';
-  try {
-    var r = await api('ai?k=' + encodeURIComponent(k));
-    if (!r.ok) { if (box) box.textContent = 'AI 审核失败：' + (r.error || '未知'); return; }
-    var p = r.parsed || {};
-    var line = 'AI：风险 ' + (p.risk || '?') + ' · ' + (p.category || '?') + ' · 建议 ' + (p.suggest || '?') + ' —— ' + (p.reason || r.verdict);
-    if (box) { box.style.color = (p.risk === 'high') ? '#ffb4c0' : (p.risk === 'medium' ? '#ffd479' : '#7ee787'); box.textContent = line; }
-  } catch (e) { if (box) box.textContent = 'AI 审核失败：' + e.message; }
-}
 async function doHandled(k){
   await api('handled?k=' + encodeURIComponent(k));
   say('已忽略这条举报'); load();
@@ -183,13 +179,34 @@ document.getElementById('list').addEventListener('click', function(ev){
   if (bh) { doBanH(bh.getAttribute('data-banh'), Number(bh.getAttribute('data-h')) || 168, bh.getAttribute('data-who')); return; }
   var cl = ev.target.closest('button[data-clear]');
   if (cl) { doClear(cl.getAttribute('data-clear')); return; }
-  var ai = ev.target.closest('button[data-ai]');
-  if (ai) { doAI(ai.getAttribute('data-ai')); return; }
 });
 document.getElementById('bans').addEventListener('click', function(ev){
   var b = ev.target.closest('button[data-unban]'); if (!b) return;
   doUnban(b.getAttribute('data-unban'));
 });
+document.getElementById('api-help').textContent = [
+  '① 读待审（默认只给未处理，加 &status=all 拿全部）',
+  '   GET /api/pending?key=<KEY>&limit=20',
+  '',
+  '② 批复 / 处置（by= 会记进记录，管理页显示处理人）',
+  '   GET /api/action?key=<KEY>&action=ignore&k=<记录key>&by=bot',
+  '   GET /api/action?key=<KEY>&action=clear&k=<记录key>&by=bot',
+  '   GET /api/action?key=<KEY>&action=ban&iph=<IP哈希>&hours=8&by=bot',
+  '   GET /api/action?key=<KEY>&action=kick&iph=<IP哈希>&by=bot',
+  '   GET /api/action?key=<KEY>&action=unban&iph=<IP哈希>&by=bot',
+  '',
+  '③ 数据 / 运维',
+  '   GET /admin/data?key=<KEY>    # 统计 + 举报记录 + 封禁列表',
+  '   GET /admin/reset?key=<KEY>   # 清场（踢掉所有在线连接）',
+].join(String.fromCharCode(10));
+document.getElementById('copyapi').onclick = function(){
+  try {
+    navigator.clipboard.writeText(document.getElementById('api-help').textContent).then(function(){
+      document.getElementById('apimsg').textContent = '已复制';
+      setTimeout(function(){ document.getElementById('apimsg').textContent = ''; }, 2500);
+    });
+  } catch (e) { document.getElementById('apimsg').textContent = '复制失败，手动选中吧'; }
+};
 document.getElementById('onlynew').addEventListener('change', load);
 document.getElementById('rf').onclick = load;
 document.getElementById('reset').onclick = async function(){ if (confirm('确定踢掉所有连接？')) { var r = await api('reset'); say('已清场，踢掉 ' + r.kicked + ' 人'); load(); } };
@@ -225,10 +242,10 @@ const PAGE = `<!doctype html>
   .sys{align-self:center;font-size:12.5px;color:#6b7385;background:none;text-align:center;max-width:92%}
   .m{position:relative}
   .m img{display:block;max-width:100%;border-radius:10px;cursor:zoom-in}
-  .rbtn{position:absolute;top:-9px;right:-9px;display:none;width:26px;height:26px;min-height:26px;padding:0;
-        border-radius:50%;border:1px solid #2b5cff;background:#2b5cff;color:#fff;font-size:13px;line-height:1;cursor:pointer}
-  .m:hover .rbtn{display:block}
-  @media (hover:none){ .rbtn{display:none !important} }
+  .rbtn{position:absolute;top:-8px;right:-8px;display:block;width:24px;height:24px;min-height:24px;padding:0;
+        border-radius:50%;border:1px solid #3a4356;background:#232a3a;color:#aab3c5;font-size:12px;line-height:1;
+        cursor:pointer;opacity:.5}
+  .m:hover .rbtn{opacity:1;border-color:#2b5cff;background:#2b5cff;color:#fff}
   .mtip{font-size:11.5px;color:#5d6577;text-align:center}
   footer{padding:8px 10px calc(8px + env(safe-area-inset-bottom));border-top:1px solid #1d2230;
          display:flex;gap:7px;align-items:center;flex:none;background:#0b0d12}
@@ -418,11 +435,13 @@ function img(src, me, from, id){ const d = el(me?'me':'you',''); if (from) { con
   i.addEventListener('click', () => { $('#lbi').src = src; $('#lb').classList.add('on'); }); d.appendChild(i); attachReport(d, id); return d; }
 $('#lb').addEventListener('click', () => { $('#lb').classList.remove('on'); $('#lbi').src=''; });
 
-function setState(s){
-  stat.textContent = s;
-  const on = s === '聊天中' || s === '群聊中';
+function setState(key, vars){
+  stat.textContent = T(key, vars);
+  const on = key === 'st_chat' || key === 'st_group';
   input.disabled = !on; $('#send').disabled = !on; $('#pic').disabled = !on;
   $('#next').disabled = !joined;
+  // 群聊只有一个大厅，「换一个」没有意义 → 直接隐藏
+  $('#next').style.display = (mode === 'group') ? 'none' : '';
   inChat = on;
 }
 
@@ -500,7 +519,7 @@ $('#next').addEventListener('click', () => {
   log.innerHTML = ''; loadTipEl = null;
   sys(mode === 'group' ? T('entering') : T('searching'));
   send({t: 'skip'});
-  setState(mode === 'group' ? '凑人中…' : '排队中');
+  setState(mode === 'group' ? 'st_joining' : 'st_queue');
 });
 $('#pic').addEventListener('click', () => $('#file').click());
 
