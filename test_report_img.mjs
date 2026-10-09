@@ -8,7 +8,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // 造一张稍大的图（约 40KB base64），保证"截断版"和"完整版"能区分开
 const IMG = 'data:image/jpeg;base64,' + 'A'.repeat(40000);
 
-const a = new WebSocket('wss://b.793777.xyz/ws');
+const a = new WebSocket('wss://anon-chat.example.workers.dev/ws');
 a.addEventListener('open', () => a.send(JSON.stringify({ t: 'join', mode: 'one' })));
 let matched = false;
 a.addEventListener('message', e => {
@@ -19,7 +19,7 @@ a.addEventListener('message', e => {
   }
 });
 await sleep(900);
-const b = new WebSocket('wss://b.793777.xyz/ws');
+const b = new WebSocket('wss://anon-chat.example.workers.dev/ws');
 await new Promise(r => b.addEventListener('open', r));
 b.send(JSON.stringify({ t: 'join', mode: 'one' }));
 b.addEventListener('message', e => {

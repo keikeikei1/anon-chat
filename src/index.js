@@ -28,7 +28,7 @@ const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须
 const IMG_PLACEHOLDER = '…(图，已省略)';
 // DO 实例身份由 idFromName 的 name 决定：改了 DO 代码而不换 name，实例会一直粘着旧代码。
 // 所以「部署后行为没变」时，把 DO_NAME 加个后缀就是最可靠的生效手段（旧 name 的数据仍可读）。
-const DO_NAME = 'main10';   // 缓冲里图片只留占位，完整图不进每人的内存
+const DO_NAME = 'main11';   // 缓冲里图片只留占位，完整图不进每人的内存
 
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -976,6 +976,20 @@ export default {
       return new Response(JSON.stringify({ ok: true, from, imported: res }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
+    if (url.pathname === '/admin/export') {
+      if (!isAdmin) return new Response('forbidden', { status: 403 });
+      const stub = env.LOBBY.get(env.LOBBY.idFromName(url.searchParams.get('do') || DO_NAME));
+      const prefix = url.searchParams.get('prefix') || 'report:';
+      const after = url.searchParams.get('after') || '';
+      return stub.fetch(new Request('https://do/export?prefix=' + encodeURIComponent(prefix) +
+        '&after=' + encodeURIComponent(after) + '&limit=' + encodeURIComponent(url.searchParams.get('limit') || '500')));
+    }
+    if (url.pathname === '/admin/import' && req.method === 'POST') {
+      if (!isAdmin) return new Response('forbidden', { status: 403 });
+      const stub = env.LOBBY.get(env.LOBBY.idFromName(DO_NAME));
+      const body = await req.text();
+      return stub.fetch(new Request('https://do/import', { method: 'POST', body }));
+    }
     if (url.pathname === '/admin/reset') {
       const key = url.searchParams.get('key') || '';
       if (!env.ADMIN_KEY || key !== env.ADMIN_KEY) return new Response('forbidden', { status: 403 });
@@ -1018,7 +1032,7 @@ export class Lobby3 {
     }
     if (url.pathname === '/clearmessages') {
       const key = url.searchParams.get('k') || '';
-      const rec = await this.state.storage.get(key);
+      const rec = await this.dbGet(key);
       if (!rec) return new Response(JSON.stringify({ ok: false, error: 'gone' }),
         { status: 404, headers: { 'content-type': 'application/json' } });
       // 要删的消息 id：被举报那条 + 记录里的上下文
@@ -1030,14 +1044,14 @@ export class Lobby3 {
       // ① 清举报快照
       rec.msgs = []; rec.reported_msg = null;
       rec.content_cleared = true; rec.cleared_at = new Date().toISOString();
-      await this.state.storage.put(key, rec);
+      await this.dbPut(key, rec);
       // ② 从聊天历史库里删掉这些消息（按 id 匹配）
       let histDeleted = 0;
       if (uniq.length) {
         try {
-          const list = await this.state.storage.list({ prefix: 'm:', limit: 1000 });
+          const list = await this.dbList({ prefix: 'm:', limit: 1000 });
           for (const [hk, v] of list) {
-            if (v && uniq.indexOf(v.id) >= 0) { await this.state.storage.delete(hk); histDeleted++; }
+            if (v && uniq.indexOf(v.id) >= 0) { await this.dbDel(hk); histDeleted++; }
           }
         } catch {}
       }
@@ -1051,11 +1065,11 @@ export class Lobby3 {
     }
     if (url.pathname === '/handled') {
       const key = url.searchParams.get('k') || '';
-      const rec = await this.state.storage.get(key);
+      const rec = await this.dbGet(key);
       if (!rec) return new Response(JSON.stringify({ ok: false, error: 'gone' }),
         { status: 404, headers: { 'content-type': 'application/json' } });
       rec.handled = true; rec.handled_at = new Date().toISOString();
-      await this.state.storage.put(key, rec);
+      await this.dbPut(key, rec);
       return new Response(JSON.stringify({ ok: true }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
@@ -1065,7 +1079,7 @@ export class Lobby3 {
       if (!/^[0-9a-f]{64}$/.test(iph)) return new Response(JSON.stringify({ ok: false, error: 'bad iph' }),
         { status: 400, headers: { 'content-type': 'application/json' } });
       const rec = { iph, at: new Date().toISOString(), until: Date.now() + hours * 3600000, hours };
-      await this.state.storage.put('ban:' + iph, rec);
+      await this.dbPut('ban:' + iph, rec);
       let kicked = 0;
       for (const c of [...this.pairs.values()]) {
         if (c.iph === iph) { try { c.ws.close(1001, 'banned'); } catch {} kicked++; }
@@ -1075,24 +1089,24 @@ export class Lobby3 {
     }
     if (url.pathname === '/unban') {
       const iph = url.searchParams.get('iph') || '';
-      await this.state.storage.delete('ban:' + iph);
+      await this.dbDel('ban:' + iph);
       return new Response(JSON.stringify({ ok: true, iph }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/markreviewed') {
       const key = url.searchParams.get('k') || '';
-      const rec = await this.state.storage.get(key);
+      const rec = await this.dbGet(key);
       if (!rec) return new Response(JSON.stringify({ ok: false }), { status: 404, headers: { 'content-type': 'application/json' } });
       rec.reviewed_by = (url.searchParams.get('by') || '').slice(0, 40);
       rec.reviewed_action = (url.searchParams.get('action') || '').slice(0, 20);
       rec.reviewed_at = new Date().toISOString();
       if (rec.reviewed_action === 'ignore') rec.handled = true;
-      await this.state.storage.put(key, rec);
+      await this.dbPut(key, rec);
       return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/reportimage') {
       const key = url.searchParams.get('k') || '';
-      const rec = await this.state.storage.get(key);
+      const rec = await this.dbGet(key);
       const v = (rec && rec.reported_msg && typeof rec.reported_msg.v === 'string') ? rec.reported_msg.v : '';
       const mm = v.match(/^data:(image\/[a-z+]+);base64,(.+)$/);
       if (!mm) return new Response('no image', { status: 404 });
@@ -1101,14 +1115,14 @@ export class Lobby3 {
     }
     if (url.pathname === '/getreport') {
       const key = url.searchParams.get('k') || '';
-      const rec = await this.state.storage.get(key);
+      const rec = await this.dbGet(key);
       if (!rec) return new Response(JSON.stringify({ ok: false }), { status: 404, headers: { 'content-type': 'application/json' } });
       return new Response(JSON.stringify({ ok: true, key, ...rec }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/dump') {
       const prefix = url.searchParams.get('prefix') || 'm:';
-      const list = await this.state.storage.list({ prefix, limit: 1000 });
+      const list = await this.dbList({ prefix, limit: 1000 });
       const entries = [...list].map(([k, v]) => ({ k, v }));
       return new Response(JSON.stringify({ ok: true, count: entries.length, entries }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
@@ -1116,8 +1130,27 @@ export class Lobby3 {
     if (url.pathname === '/load' && req.method === 'POST') {
       let body; try { body = await req.json(); } catch { return new Response('{"ok":false}', { status: 400, headers: { 'content-type': 'application/json' } }); }
       const entries = (body && body.entries) || [];
-      for (const e of entries) { if (e && e.k) await this.state.storage.put(e.k, e.v); }
+      for (const e of entries) { if (e && e.k) await this.dbPut(e.k, e.v); }
       return new Response(JSON.stringify({ ok: true, loaded: entries.length }),
+        { headers: { 'content-type': 'application/json;charset=utf-8' } });
+    }
+    if (url.pathname === '/export') {
+      // 全量导出（分批，避免一次拉太多）：prefix=m:|report:|ban:，offset 从 0 开始
+      const prefix = url.searchParams.get('prefix') || 'report:';
+      const after = url.searchParams.get('after') || '';
+      const lim = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit') || '500', 10) || 500));
+      const list = await this.dbList({ prefix, limit: lim, ...(after ? { startAfter: after } : {}) });
+      const entries = [...list].map(([k, v]) => ({ k, v }));
+      const last = entries.length ? entries[entries.length - 1].k : null;
+      return new Response(JSON.stringify({ ok: true, prefix, count: entries.length, entries, next: (entries.length === lim ? last : null) }),
+        { headers: { 'content-type': 'application/json;charset=utf-8' } });
+    }
+    if (url.pathname === '/import' && req.method === 'POST') {
+      let body; try { body = await req.json(); } catch { return new Response('{"ok":false,"error":"bad json"}', { status: 400, headers: { 'content-type': 'application/json' } }); }
+      const entries = (body && body.entries) || [];
+      let n = 0;
+      for (const e of entries) { if (e && typeof e.k === 'string') { await this.dbPut(e.k, e.v); n++; } }
+      return new Response(JSON.stringify({ ok: true, imported: n }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/stats') {
@@ -1125,7 +1158,7 @@ export class Lobby3 {
       const off = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
       const lim = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit') || '20', 10) || 20));
       const hall = this.hall ? [...this.hall.members].filter(c => this.alive(c)).length : 0;
-      const rep = await this.state.storage.list({ prefix: 'report:', limit: 1000 });
+      const rep = await this.dbList({ prefix: 'report:', limit: 1000 });
       const arr = [...rep].map(([k, v]) => {
         const o = { key: k, ...v };
         if (o.reported_msg && o.reported_msg.k === 'img' && typeof o.reported_msg.v === 'string' && o.reported_msg.v.length > 300) {
@@ -1135,18 +1168,18 @@ export class Lobby3 {
       }).sort((a, b) => (a.at < b.at ? 1 : -1));
       const filtered = q ? arr.filter(r => JSON.stringify(r).toLowerCase().indexOf(q) >= 0) : arr;
       const page = filtered.slice(off, off + lim);
-      const bl = await this.state.storage.list({ prefix: 'ban:', limit: 500 });
+      const bl = await this.dbList({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-2045', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261009-2130', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000),
         reports: page, reports_total: filtered.length, reports_all: arr.length, offset: off, limit: lim, q,
         bans,
       }), { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
     if (url.pathname === '/clearreports') {
-      const list = await this.state.storage.list({ prefix: 'report:', limit: 1000 });
-      for (const k of list.keys()) await this.state.storage.delete(k);
+      const list = await this.dbList({ prefix: 'report:', limit: 1000 });
+      for (const k of list.keys()) await this.dbDel(k);
       return new Response(JSON.stringify({ ok: true, deleted: list.size }),
         { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
@@ -1162,7 +1195,7 @@ export class Lobby3 {
     server.accept();
     const ip = req.headers.get('CF-Connecting-IP') || '0.0.0.0';
     const iph = await sha256hex(ip + '|' + (this.env.IP_SALT || 'anon-chat-salt'));
-    const ban = await this.state.storage.get('ban:' + iph);
+    const ban = await this.dbGet('ban:' + iph);
     if (ban && ban.until > Date.now()) {
       try { server.close(1001, 'banned'); } catch {}
       return new Response(JSON.stringify({ error: 'banned', until: ban.until }), {
@@ -1179,6 +1212,33 @@ export class Lobby3 {
     server.addEventListener('close', () => this.onClose(conn));
     server.addEventListener('error', () => this.onClose(conn));
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // ---------- 数据层：全部走 D1（数据不再绑在这个实例上，换实例名/重启都不丢）----------
+  async dbPut(k, v) {
+    await this.env.DB.prepare('INSERT INTO kv (k, body, at) VALUES (?, ?, ?) ON CONFLICT(k) DO UPDATE SET body = excluded.body')
+      .bind(k, JSON.stringify(v), Date.now()).run();
+  }
+  async dbGet(k) {
+    const r = await this.env.DB.prepare('SELECT body FROM kv WHERE k = ?').bind(k).first();
+    return r ? JSON.parse(r.body) : undefined;
+  }
+  async dbDel(k) { await this.env.DB.prepare('DELETE FROM kv WHERE k = ?').bind(k).run(); }
+  async dbList(opts) {
+    opts = opts || {};
+    const prefix = opts.prefix || '';
+    const limit = Math.max(1, Math.min(1000, opts.limit || 1000));
+    const desc = !!opts.reverse;
+    let sql = 'SELECT k, body FROM kv WHERE k LIKE ?';
+    const binds = [prefix.replace(/[%_]/g, m => '\\' + m) + '%'];
+    if (opts.end) { sql += ' AND k < ?'; binds.push(opts.end); }        // DO storage 的 end 是「不含」
+    if (opts.startAfter) { sql += ' AND k > ?'; binds.push(opts.startAfter); }
+    sql += ' ORDER BY k ' + (desc ? 'DESC' : 'ASC') + ' LIMIT ?';
+    binds.push(limit);
+    const res = await this.env.DB.prepare(sql + ' -- ').bind(...binds).all();
+    const m = new Map();
+    for (const row of (res.results || [])) m.set(row.k, JSON.parse(row.body));
+    return m;
   }
 
   send(conn, obj) { try { conn.ws.send(JSON.stringify(obj)); } catch {} }
@@ -1227,7 +1287,7 @@ export class Lobby3 {
   async sendHallHistory(conn) {
     try {
       const cutoff = Date.now() - HISTORY_TTL_MS;
-      const list = await this.state.storage.list({ prefix: 'm:', reverse: true, limit: HISTORY_LIMIT });
+      const list = await this.dbList({ prefix: 'm:', reverse: true, limit: HISTORY_LIMIT });
       const items = []; let imgs = 0;
       const imgCutoff = Date.now() - HISTORY_IMG_TTL_MS;
       for (const [, v] of list) {
@@ -1272,14 +1332,14 @@ export class Lobby3 {
   // 落盘一条聊天记录（key 按时间戳有序，过期由 alarm 清）
   saveHistory(item) {
     const key = 'm:' + String(item.at).padStart(15, '0') + ':' + Math.random().toString(36).slice(2, 6);
-    try { this.state.waitUntil(this.state.storage.put(key, item)); } catch {}
+    try { this.dbPut(key, item); } catch {}
   }
 
   // 从聊天历史里按消息 id 找回原图（只在有人举报图片时才调用）
   async findHistoryImg(id) {
     if (!id) return null;
     try {
-      const list = await this.state.storage.list({ prefix: 'm:', reverse: true, limit: HISTORY_LIMIT });
+      const list = await this.dbList({ prefix: 'm:', reverse: true, limit: HISTORY_LIMIT });
       for (const [, v] of list) {
         if (v && v.k === 'img' && v.id === id && typeof v.v === 'string' && v.v.length > 300) return v.v;
       }
@@ -1290,12 +1350,12 @@ export class Lobby3 {
   async cleanupHistory() {
     try {
       const cutoff = Date.now() - HISTORY_TTL_MS;
-      const old = await this.state.storage.list({ prefix: 'm:', end: 'm:' + String(cutoff).padStart(15, '0') });
-      for (const k of old.keys()) await this.state.storage.delete(k);
+      const old = await this.dbList({ prefix: 'm:', end: 'm:' + String(cutoff).padStart(15, '0') });
+      for (const k of old.keys()) await this.dbDel(k);
     } catch {}
   }
 
-  scheduleCleanup() { try { this.state.storage.setAlarm(Date.now() + 6 * 3600 * 1000); } catch {} }
+  scheduleCleanup() { try { this.state.storage.setAlarm(Date.now() + 6 * 3600 * 1000); } catch {} }   // alarm 仍用 DO 机制（调度，不是数据）
   async alarm() { await this.cleanupHistory(); this.scheduleCleanup(); }
 
 
@@ -1442,13 +1502,13 @@ export class Lobby3 {
           ? Object.assign({}, x, { v: IMG_PLACEHOLDER }) : x),
       handled: false,
     };
-    try { await this.state.storage.put('report:' + Date.now() + ':' + Math.random().toString(36).slice(2, 8), record); } catch {}
+    try { await this.dbPut('report:' + Date.now() + ':' + Math.random().toString(36).slice(2, 8), record); } catch {}
     this.send(conn, { t: 'reported' });
   }
 
   async listReports() {
     const out = [];
-    const list = await this.state.storage.list({ prefix: 'report:', limit: 200 });
+    const list = await this.dbList({ prefix: 'report:', limit: 200 });
     for (const [k, v] of list) out.push({ key: k, ...v });
     out.sort((a, b) => (a.at < b.at ? 1 : -1));
     return new Response(JSON.stringify({ count: out.length, reports: out }, null, 2),
