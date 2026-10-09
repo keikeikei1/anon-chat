@@ -112,6 +112,7 @@ const ADMIN_PAGE = `<!doctype html>
 </div>
 <h2 id="bh">封禁列表</h2>
 <div id="bans"></div>
+</div><!-- /#panel -->
 <script>
 var K = (function () {
   var u = new URLSearchParams(location.search).get('key');
@@ -123,11 +124,16 @@ var K = (function () {
 function showLogin(msg) {
   var el = document.getElementById('login');
   try { document.getElementById('panel').style.display = 'none'; } catch (e) {}   // 未登录：管理界面整块不显示
+  el.style.display = 'flex';
   el.classList.add('on');
   document.getElementById('lerr').textContent = msg || '';
   setTimeout(function(){ try { document.getElementById('lkey').focus(); } catch (e) {} }, 60);
 }
-function hideLogin() { document.getElementById('login').classList.remove('on'); }
+function hideLogin() {
+  var el = document.getElementById('login');
+  el.classList.remove('on');
+  el.style.display = 'none';          // 双保险：class 之外再用 inline 强制隐藏
+}
 function askKey() { showLogin(''); }
 (function bindLogin(){
   var inp = document.getElementById('lkey'), err = document.getElementById('lerr');
@@ -319,7 +325,6 @@ document.getElementById('chkey').onclick = function(){ K = ''; try { localStorag
 if (!K) showLogin(''); else load();   // 有 key 也要先用它成功取一次数据，才显示管理界面（校验不过会自动退回登录卡）
 document.getElementById('reset').onclick = async function(){ if (confirm('确定踢掉所有连接？')) { var r = await api('reset'); say('已清场，踢掉 ' + r.kicked + ' 人'); load(); } };
 document.getElementById('clr').onclick = async function(){ if (confirm('确定清空所有举报记录？')) { var r = await api('clearreports'); say('已清空 ' + r.deleted + ' 条'); load(); } };
-</div><!-- /#panel -->
 load();
 </script>
 </body></html>`;
@@ -1212,7 +1217,7 @@ export class Lobby3 {
       const bl = await this.dbList({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-2225', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261009-2250', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000),
         reports: page, reports_total: filtered.length, reports_all: arr.length, offset: off, limit: lim, q,
         bans,
