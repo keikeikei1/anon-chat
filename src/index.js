@@ -25,6 +25,7 @@ const HISTORY_IMG_MAX = 2;         // 历史里最多重发 2 张图，更早的
 const HISTORY_IMG_TTL_MS = 24 * 3600 * 1000;  // 图片只保留 1 天（比文字短）
 const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须 > 心跳间隔）
 const BLOCK_WORDS = ['http://', 'https://', 'www.'];  // 挡外链，防广告/钓鱼
+const IMG_PLACEHOLDER = '…(图，已省略)';   // 缓冲里图片只留占位，完整图不进每人的内存
 
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -123,10 +124,11 @@ async function load(){
       +  ' · 被举报 IP 哈希 ' + esc(String(r.reported_ip_hash || '').slice(0, 20)) + '…</div>'
       +  (r.reviewed_by ? '<div class="meta">处理人：' + esc(r.reviewed_by) + '（' + esc(r.reviewed_action || '') + ' · ' + esc(r.reviewed_at || '') + '）</div>' : '')
       +  (r.content_cleared ? '<div class="meta">（聊天内容已清除）</div>' : '')
-      +  (r.reported_msg && r.reported_msg.k === 'img' && /^data:image\//.test(String(r.reported_msg.v || ''))
-            ? '<div class="meta" style="color:#ffb4c0">被举报的图片：' + (r.reported_msg.tag ? ('陌生人 ' + esc(r.reported_msg.tag)) : '对方') + '</div>'
-              + '<img class="repimg" src="' + esc(r.reported_msg.v) + '" alt="reported image">'
-            : (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：' + (r.reported_msg.tag ? ('陌生人 ' + esc(r.reported_msg.tag)) : '对方') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : ''))
+      +  (r.reported_msg && r.reported_msg.k === 'img'
+            ? '<div class="meta" style="color:#ffb4c0">被举报的是图片' + (r.reported_msg.tag ? ('（陌生人 ' + esc(r.reported_msg.tag) + '）') : '') + '</div>'
+              + '<div class="row" style="margin-top:8px"><button data-showimg="' + esc(r.key) + '">🖼 查看这张图</button></div>'
+              + '<div class="imgbox" data-imgbox="' + esc(r.key) + '"></div>'
+            : (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：' + (r.reported_msg.tag ? ('陌生人 ' + esc(r.reported_msg.tag)) : '对方') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : '<div class="meta">（这条举报没抓到具体消息内容）</div>'))
       +  (r.room_staff && r.room_staff.length ? '<div class="meta">当时在场：' + r.room_staff.map(function(s){ return '#' + s.tag; }).join(' ') + '</div>' : '')
       +  (lines ? '<pre>' + lines + '</pre>' : '')
       +  '<div class="row" style="margin-top:10px">'
@@ -188,6 +190,16 @@ document.getElementById('list').addEventListener('click', function(ev){
   if (bh) { doBanH(bh.getAttribute('data-banh'), Number(bh.getAttribute('data-h')) || 168, bh.getAttribute('data-who')); return; }
   var cl = ev.target.closest('button[data-clear]');
   if (cl) { doClear(cl.getAttribute('data-clear')); return; }
+  var si = ev.target.closest('button[data-showimg]');
+  if (si) {
+    var kk = si.getAttribute('data-showimg');
+    var box = document.querySelector('.imgbox[data-imgbox="' + kk.replace(/"/g, '') + '"]');
+    if (box) {
+      box.innerHTML = '<img class="repimg" src="/admin/image?key=' + encodeURIComponent(K) + '&k=' + encodeURIComponent(kk) + '&t=' + Date.now() + '" alt="reported image">';
+      si.disabled = true; si.textContent = '🖼 已展开';
+    }
+    return;
+  }
 });
 document.getElementById('bans').addEventListener('click', function(ev){
   var b = ev.target.closest('button[data-unban]'); if (!b) return;
@@ -340,7 +352,7 @@ const STR = {
     room_join: '已进入大厅，当前 {n} 人（你是陌生人 {t}）',
     loading_hist: '正在加载最近的聊天记录…', hist_head: '—— 以下是最近 3 天的聊天记录 ——', hist_tail: '—— 以上是之前的聊天 ——',
     sys_join: '陌生人 {n} 加入了', sys_part: '陌生人 {n} 离开了', img_ph: '陌生人 {n}：[图片]',
-    left: '对方离开了，点右上角「换一个」', reported: '已举报，已提交管理员审核',
+    left: '对方离开了，点右上角「换一个」', reported: '已举报，已提交管理员审核', to_one: '切成一对一 ▸',
     disc: '连接断开，{s} 秒后自动重连…（已重连 {c} 次）', offline: '连接已断开',
     err_notconn: '未连接', err_net: '网络异常', err_fast: '发太快了，慢一点', err_link: '这里不允许发链接',
     err_imgfast: '图片发太快了', err_imgbig: '图片太大', err_badimg: '图片格式不支持', err_onlyimg: '只能发图片',
@@ -363,7 +375,7 @@ const STR = {
     room_join: 'joined the lobby, {n} online (you are stranger {t})',
     loading_hist: 'loading recent messages…', hist_head: '—— recent messages (last 3 days) ——', hist_tail: '—— end of history ——',
     sys_join: 'stranger {n} joined', sys_part: 'stranger {n} left', img_ph: 'stranger {n}: [image]',
-    left: 'stranger left — tap "next" in the corner', reported: 'reported — sent to the moderator',
+    left: 'stranger left — tap "next" in the corner', reported: 'reported — sent to the moderator', to_one: 'switch to 1-on-1 ▸',
     disc: 'disconnected, reconnecting in {s}s… (attempt {c})', offline: 'disconnected',
     err_notconn: 'not connected', err_net: 'network error', err_fast: 'slow down', err_link: 'links are not allowed here',
     err_imgfast: 'sending images too fast', err_imgbig: 'image too large', err_badimg: 'unsupported image format', err_onlyimg: 'images only',
@@ -443,7 +455,7 @@ function attachReport(el, id){
 }
 function askReport(id){
   if (!inChat) return;
-  if (confirm('举报这条消息？管理员会看到这条内容和上下文。')) send({ t: 'report', id });
+  if (confirm(T('rep_q'))) send({ t: 'report', id });
 }
 function msg(t, me, from, id){ const d = el(me?'me':'you'); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent=T('who',{n:from}); d.appendChild(w); } d.appendChild(document.createTextNode(t)); attachReport(d, id); return d; }
 function img(src, me, from, id){ const d = el(me?'me':'you',''); if (from) { const w=document.createElement('span'); w.className='who'; w.textContent=T('who',{n:from}); d.appendChild(w); }
@@ -456,8 +468,8 @@ function setState(key, vars){
   const on = key === 'st_chat' || key === 'st_group';
   input.disabled = !on; $('#send').disabled = !on; $('#pic').disabled = !on;
   $('#next').disabled = !joined;
-  // 群聊只有一个大厅，「换一个」没有意义 → 直接隐藏
-  $('#next').style.display = (mode === 'group') ? 'none' : '';
+  // 群聊里没有「换一个」的意义，改成「切成一对一」，免得住进来就出不去
+  $('#next').textContent = (mode === 'group') ? T('to_one') : T('next');
   inChat = on;
 }
 
@@ -506,7 +518,7 @@ function connect(){
     }
     else if (m.t === 'left') { sys(T('left')); setState(mode === 'group' ? 'st_joining' : 'st_queue'); }
     else if (m.t === 'reported') { sys(T('reported')); }
-    else if (m.t === 'err') { sys(m.v); }
+    else if (m.t === 'err') { sys(m.k ? T('err_' + m.k) : (m.v || '')); }
     else if (m.t === 'sys') { sys(m.k ? T('sys_' + m.k, { n: m.n }) : (m.v || '')); }
     else if (m.t === 'pong') {}
   };
@@ -532,6 +544,11 @@ function sendText(){
 $('#send').addEventListener('click', sendText);
 input.addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
 $('#next').addEventListener('click', () => {
+  // 群聊里这个按钮 = 换成一对一（否则进来就出不去了）
+  if (mode === 'group') {
+    mode = 'one'; remember('mode', 'one');
+    $('#m-one').classList.add('on'); $('#m-group').classList.remove('on');
+  }
   log.innerHTML = ''; loadTipEl = null;
   sys(mode === 'group' ? T('entering') : T('searching'));
   send({t: 'skip'});
@@ -666,6 +683,11 @@ export default {
           { headers: { 'content-type': 'application/json;charset=utf-8' } });
       }
     }
+    if (url.pathname === '/admin/image') {
+      if (!isAdmin) return new Response('forbidden', { status: 403 });
+      return env.LOBBY.get(env.LOBBY.idFromName('global'))
+        .fetch(new Request('https://do/reportimage?k=' + encodeURIComponent(url.searchParams.get('k') || '')));
+    }
     if (url.pathname === '/admin/kick' || url.pathname === '/admin/handled' || url.pathname === '/admin/clearmessages') {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
       const what = url.pathname.split('/').pop();
@@ -707,7 +729,7 @@ export default {
   },
 };
 
-export class Lobby {
+export class Lobby2 {
   constructor(state, env) {
     this.state = state;
     this.env = env;
@@ -780,6 +802,15 @@ export class Lobby {
       await this.state.storage.put(key, rec);
       return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
+    if (url.pathname === '/reportimage') {
+      const key = url.searchParams.get('k') || '';
+      const rec = await this.state.storage.get(key);
+      const v = (rec && rec.reported_msg && typeof rec.reported_msg.v === 'string') ? rec.reported_msg.v : '';
+      const mm = v.match(/^data:(image\/[a-z+]+);base64,(.+)$/);
+      if (!mm) return new Response('no image', { status: 404 });
+      const bin = Uint8Array.from(atob(mm[2]), c => c.charCodeAt(0));
+      return new Response(bin, { headers: { 'content-type': mm[1], 'cache-control': 'no-store' } });
+    }
     if (url.pathname === '/getreport') {
       const key = url.searchParams.get('k') || '';
       const rec = await this.state.storage.get(key);
@@ -790,11 +821,17 @@ export class Lobby {
     if (url.pathname === '/stats') {
       const hall = this.hall ? [...this.hall.members].filter(c => this.alive(c)).length : 0;
       const rep = await this.state.storage.list({ prefix: 'report:', limit: 200 });
-      const arr = [...rep].map(([k, v]) => ({ key: k, ...v })).sort((a, b) => (a.at < b.at ? 1 : -1));
+      const arr = [...rep].map(([k, v]) => {
+        const o = { key: k, ...v };
+        if (o.reported_msg && o.reported_msg.k === 'img' && typeof o.reported_msg.v === 'string' && o.reported_msg.v.length > 300) {
+          o.reported_msg = Object.assign({}, o.reported_msg, { v: '', has_img: true });   // 图片按需单独取，列表保持轻量
+        }
+        return o;
+      }).sort((a, b) => (a.at < b.at ? 1 : -1));
       const bl = await this.state.storage.list({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261009-1908', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000), reports: arr, bans,
       }), { headers: { 'content-type': 'application/json;charset=utf-8' } });
     }
@@ -895,7 +932,15 @@ export class Lobby {
       for (const it of items) {
         if (!it.id) it.id = 'h' + (it.at || Date.now());
       }
-      if (items.length) this.send(conn, { t: 'history', items: items.reverse() });
+      items.reverse();
+      // 历史也放进这条连接的留证缓冲：这样举报任何一条历史消息，服务器都拿得到内容
+      // 文字存全量；图片只存占位（原图留在历史库里，举报时按 id 取回），否则 100 人 × 300KB 会撑爆内存
+      for (const it of items) {
+        conn.msgs.push({ id: it.id, me: 0, k: it.k, tag: it.from, at: it.at,
+          v: it.k === 'img' ? IMG_PLACEHOLDER : it.v });
+        if (conn.msgs.length > KEEP_MSGS) conn.msgs.shift();
+      }
+      if (items.length) this.send(conn, { t: 'history', items });
     } catch {}
   }
 
@@ -919,6 +964,18 @@ export class Lobby {
   saveHistory(item) {
     const key = 'm:' + String(item.at).padStart(15, '0') + ':' + Math.random().toString(36).slice(2, 6);
     try { this.state.waitUntil(this.state.storage.put(key, item)); } catch {}
+  }
+
+  // 从聊天历史里按消息 id 找回原图（只在有人举报图片时才调用）
+  async findHistoryImg(id) {
+    if (!id) return null;
+    try {
+      const list = await this.state.storage.list({ prefix: 'm:', reverse: true, limit: HISTORY_LIMIT });
+      for (const [, v] of list) {
+        if (v && v.k === 'img' && v.id === id && typeof v.v === 'string' && v.v.length > 300) return v.v;
+      }
+    } catch {}
+    return null;
   }
 
   async cleanupHistory() {
@@ -956,26 +1013,27 @@ export class Lobby {
 
   deliver(conn, entry, out) {
     // 记入自己的留证缓冲
-    conn.msgs.push(entry); if (conn.msgs.length > KEEP_MSGS) conn.msgs.shift();
-    this.trimImgs(conn.msgs);
+    conn.msgs.push(entry.k === 'img' ? { id: entry.id, me: 1, k: 'img', tag: conn.tag, v: IMG_PLACEHOLDER, at: entry.at } : entry);
+    if (conn.msgs.length > KEEP_MSGS) conn.msgs.shift();
     if (conn.room) {                       // 大厅：落盘记录 + 广播
       this.saveHistory({ id: entry.id, from: conn.tag, k: entry.k, v: out.v, at: entry.at });
-      if (entry.k === 'img' && out.v) conn.lastImg = { id: entry.id, v: out.v, at: entry.at };
+      if (entry.k === 'img' && out.v) conn.lastImg = { id: entry.id, v: out.v, at: entry.at };   // 只有自己这一份完整图
       const h = conn.room;
       for (const c of h.members) {
         if (c === conn) continue;
-        if (entry.k === 'img' && out.v) {
-          c.msgs.push({ id: entry.id, me: 0, k: 'img', tag: conn.tag, v: out.v, at: entry.at });
+        // 只记占位：完整图不进每个人的内存（人多图多会撑爆 DO 的 128MB 内存）
+        // 举报图片时再去历史库按 id 取原图（历史里存的是完整图）
+        if (entry.k === 'img') {
+          c.msgs.push({ id: entry.id, me: 0, k: 'img', tag: conn.tag, v: IMG_PLACEHOLDER, at: entry.at });
           if (c.msgs.length > KEEP_MSGS) c.msgs.shift();
-          this.trimImgs(c.msgs);
         }
         this.send(c, Object.assign({ from: conn.tag }, out));
       }
     } else if (conn.peer) {               // 一对一：转发
       const forPeer = Object.assign({}, entry, { me: 0 });
+      if (entry.k === 'img') forPeer.v = IMG_PLACEHOLDER;   // 占位，完整图放 lastImg
       conn.peer.msgs.push(forPeer);
       if (conn.peer.msgs.length > KEEP_MSGS) conn.peer.msgs.shift();
-      this.trimImgs(conn.peer.msgs);
       if (entry.k === 'img' && out.v) conn.peer.lastImg = { id: entry.id, v: out.v, at: entry.at };
       this.send(conn.peer, out);
     }
@@ -1000,20 +1058,20 @@ export class Lobby {
     if (m.t === 'report') { this.report(conn, String(m.id || '')); return; }
 
     if (m.t === 'msg') {
-      if (!this.rate(conn, false)) { this.send(conn, { t: 'err', v: '发太快了，慢一点' }); return; }
+      if (!this.rate(conn, false)) { this.send(conn, { t: 'err', k: 'fast' }); return; }
       const v = String(m.v || '').slice(0, MAX_TEXT).trim();
       if (!v) return;
-      if (BLOCK_WORDS.some(w => v.toLowerCase().includes(w))) { this.send(conn, { t: 'err', v: '这里不允许发链接' }); return; }
+      if (BLOCK_WORDS.some(w => v.toLowerCase().includes(w))) { this.send(conn, { t: 'err', k: 'link' }); return; }
       const id = String(m.id || '').slice(0, 40) || ('s' + Date.now().toString(36));
       this.deliver(conn, { id, me: 1, k: 'text', tag: conn.tag, v, at: Date.now() }, { t: 'msg', v, id });
       return;
     }
 
     if (m.t === 'img') {
-      if (!this.rate(conn, true)) { this.send(conn, { t: 'err', v: '图片发太快了' }); return; }
+      if (!this.rate(conn, true)) { this.send(conn, { t: 'err', k: 'imgfast' }); return; }
       const v = String(m.v || '');
-      if (!/^data:image\/(jpeg|png|webp|gif);base64,/.test(v)) { this.send(conn, { t: 'err', v: '图片格式不支持' }); return; }
-      if (v.length > MAX_IMG_CHARS) { this.send(conn, { t: 'err', v: '图片太大' }); return; }
+      if (!/^data:image\/(jpeg|png|webp|gif);base64,/.test(v)) { this.send(conn, { t: 'err', k: 'badimg' }); return; }
+      if (v.length > MAX_IMG_CHARS) { this.send(conn, { t: 'err', k: 'imgbig' }); return; }
       const imgId = String(m.id || '').slice(0, 40) || ('s' + Date.now().toString(36));
       // 缓冲里保留完整图（审核要看到原图）；更早的第 4 张起才降级，避免内存无限涨
       this.deliver(conn, { id: imgId, me: 1, k: 'img', tag: conn.tag, v, at: Date.now() }, { t: 'img', v, id: imgId });
@@ -1023,11 +1081,21 @@ export class Lobby {
 
   async report(conn, msgId) {
     const msgs = conn.msgs || [];
-    const idx = msgId ? msgs.findIndex(x => x && x.id === msgId) : -1;
+    let idx = msgId ? msgs.findIndex(x => x && x.id === msgId) : -1;
+    // 兜底：历史的旧消息没有 id（或前端补的临时 id），就取最近一条「对方的」消息当被举报内容
+    if (idx < 0) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i] && msgs[i].me === 0) { idx = i; break; }
+      }
+      if (idx < 0 && msgs.length) idx = msgs.length - 1;
+    }
     let target = idx >= 0 ? msgs[idx] : null;
-    // 举报的是图片 → 换成完整图（滚动缓冲里只存截断版，审核看不到图就没法判定）
-    if (target && target.k === 'img' && conn.lastImg && conn.lastImg.id === target.id) {
-      target = Object.assign({}, target, { v: conn.lastImg.v });
+    // 举报的是图片 → 想办法拿到完整原图，审核看不到图就没法判定
+    if (target && target.k === 'img' && (typeof target.v !== 'string' || target.v.length < 300)) {
+      let full = null;
+      if (conn.lastImg && conn.lastImg.id === target.id) full = conn.lastImg.v;   // 一对一：刚收到的原图
+      if (!full) full = await this.findHistoryImg(target.id);                     // 群聊：回历史库按 id 找
+      if (full) target = Object.assign({}, target, { v: full });
     }
     // 举报 = 只上报给管理员，不自动处置（不断开、不踢人、不退群）
     const peer = conn.peer, room = conn.room;
@@ -1044,7 +1112,9 @@ export class Lobby {
       room_staff: room ? [...room.members].map(c => ({ tag: c.tag, iph: c.iph })) : [],
       reported_msg_id: msgId || null,
       reported_msg: target ? { tag: target.tag || 0, k: target.k, at: target.at, v: (target.k === 'img' ? String(target.v || '') : String(target.v || '').slice(0, 500)) } : null,
-      msgs: idx >= 0 ? msgs.slice(Math.max(0, idx - 3), idx + 4) : msgs.slice(-KEEP_MSGS),
+      msgs: (idx >= 0 ? msgs.slice(Math.max(0, idx - 3), idx + 4) : msgs.slice(-KEEP_MSGS)).map(x =>
+        (x && x.k === 'img' && typeof x.v === 'string' && x.v.length > 300)
+          ? Object.assign({}, x, { v: IMG_PLACEHOLDER }) : x),
       handled: false,
     };
     try { await this.state.storage.put('report:' + Date.now() + ':' + Math.random().toString(36).slice(2, 8), record); } catch {}

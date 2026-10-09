@@ -5,9 +5,9 @@
   "compatibility_date": "2026-10-01",
   "ai": { "binding": "AI" },
   "durable_objects": {
-    "bindings": [{ "name": "LOBBY", "class_name": "Lobby" }]
+    "bindings": [{ "name": "LOBBY", "class_name": "Lobby2" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Lobby"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Lobby"] }, { "tag": "v2", "renamed_classes": [{ "from": "Lobby", "to": "Lobby2" }] }],
   "routes": [{ "pattern": "anon-chat.example.com", "custom_domain": true }],
   "vars": {
     "ADMIN_KEY": "CHANGE_ME_random_admin_key",
