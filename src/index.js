@@ -24,11 +24,11 @@ const HISTORY_LIMIT = 100;         // 新人进群一次最多补 100 条
 const HISTORY_IMG_MAX = 2;         // 历史里最多重发 2 张图，更早的显示 [图片]
 const HISTORY_IMG_TTL_MS = 24 * 3600 * 1000;  // 图片只保留 1 天（比文字短）
 const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须 > 心跳间隔）
-const BLOCK_WORDS = ['http://', 'https://', 'www.'];  // 挡外链，防广告/钓鱼
+// 链接放开了：不再拦截 http/https/www（运营者要能在群里发链接；挡得住职业引流的人，只烦正常人）
 const IMG_PLACEHOLDER = '…(图，已省略)';
 // DO 实例身份由 idFromName 的 name 决定：改了 DO 代码而不换 name，实例会一直粘着旧代码。
 // 所以「部署后行为没变」时，把 DO_NAME 加个后缀就是最可靠的生效手段（旧 name 的数据仍可读）。
-const DO_NAME = 'main4';   // 缓冲里图片只留占位，完整图不进每人的内存
+const DO_NAME = 'main6';   // 缓冲里图片只留占位，完整图不进每人的内存
 
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -283,7 +283,9 @@ const PAGE = `<!doctype html>
          display:flex;align-items:center;gap:8px;font-size:13px;color:#8b93a5;flex:none;min-height:52px}
   header b{color:#e8eaed;font-weight:600;font-size:15px;white-space:nowrap}
   #stat{font-size:12px;color:#6b7385;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #next{margin-left:auto;padding:8px 12px;min-height:36px;font-size:13px;flex:none}
+  #next,#toGroup{margin-left:auto;padding:7px 10px;min-height:34px;font-size:12.5px;flex:none;white-space:nowrap}
+  #next{margin-left:6px}
+  @media (max-width:430px){ #stat{display:none} }   /* 小屏别让状态文字把按钮挤掉 */
   #log{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px;display:flex;flex-direction:column;gap:8px}
   .m{max-width:80%;padding:9px 13px;border-radius:16px;white-space:pre-wrap;word-break:break-word;font-size:15px}
   .me{align-self:flex-end;background:#2b5cff;color:#fff;border-bottom-right-radius:5px}
@@ -372,7 +374,7 @@ const STR = {
     gate_ok: '我已满 18 岁，并理解这是一个无人实时审核的空间，可能遇到令人不适的内容。',
     gate_go: '进入', gate_tip: '请守规矩。违法内容会导致整个服务被关停。',
     m_one: '一对一', m_one_s: '私聊一个人', m_group: '群聊', m_group_s: '所有人一个群',
-    to_group: '群聊 ▸',
+    to_group: '去群聊 ▸',
     searching: '正在寻找陌生人…', entering: '正在进入大厅…', matched: '已配对 —— 打个招呼吧',
     room_join: '已进入大厅，当前 {n} 人（你是陌生人 {t}）',
     loading_hist: '正在加载最近的聊天记录…', hist_head: '—— 以下是最近 3 天的聊天记录 ——', hist_tail: '—— 以上是之前的聊天 ——',
@@ -498,7 +500,7 @@ function setState(key, vars){
   // 群聊里没有「换一个」的意义，改成「切成一对一」，免得住进来就出不去
   $('#next').textContent = (mode === 'group') ? T('to_one') : T('next');
   // 一对一时给一条去群聊的路（群聊里则由 #next 变成「切成一对一」，两个方向都通）
-  $('#toGroup').style.display = (mode === 'group' || !on) ? 'none' : '';
+  $('#toGroup').style.display = (mode === 'group') ? 'none' : '';
   inChat = on;
 }
 
@@ -918,7 +920,7 @@ export class Lobby3 {
       const bl = await this.state.storage.list({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-2005', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261009-2000', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000),
         reports: page, reports_total: filtered.length, reports_all: arr.length, offset: off, limit: lim, q,
         bans,
@@ -1153,7 +1155,6 @@ export class Lobby3 {
       if (!this.rate(conn, false)) { this.send(conn, { t: 'err', k: 'fast' }); return; }
       const v = String(m.v || '').slice(0, MAX_TEXT).trim();
       if (!v) return;
-      if (BLOCK_WORDS.some(w => v.toLowerCase().includes(w))) { this.send(conn, { t: 'err', k: 'link' }); return; }
       const id = String(m.id || '').slice(0, 40) || ('s' + Date.now().toString(36));
       this.deliver(conn, { id, me: 1, k: 'text', tag: conn.tag, v, at: Date.now() }, { t: 'msg', v, id });
       return;
