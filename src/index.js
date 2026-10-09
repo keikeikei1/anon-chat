@@ -97,7 +97,7 @@ async function load(){
       +  '<div class="meta">举报者 IP 哈希 ' + esc(String(r.reporter_ip_hash || '').slice(0, 20)) + '…'
       +  ' · 被举报 IP 哈希 ' + esc(String(r.reported_ip_hash || '').slice(0, 20)) + '…</div>'
       +  (r.content_cleared ? '<div class="meta">（聊天内容已清除）</div>' : '')
-      +  (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：陌生人 ' + esc(r.reported_msg.tag || '?') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : '')
+      +  (r.reported_msg ? '<div class="meta" style="color:#ffb4c0">被举报的消息：' + (r.reported_msg.tag ? ('陌生人 ' + esc(r.reported_msg.tag)) : '对方') + '：' + esc(String(r.reported_msg.v || '').slice(0, 300)) + '</div>' : '')
       +  (r.room_staff && r.room_staff.length ? '<div class="meta">当时在场：' + r.room_staff.map(function(s){ return '#' + s.tag; }).join(' ') + '</div>' : '')
       +  (lines ? '<pre>' + lines + '</pre>' : '')
       +  '<div class="row" style="margin-top:10px">'
@@ -722,7 +722,11 @@ export class Lobby {
       mode: room ? 'group' : 'one',
       reporter_ip_hash: conn.iph,
       reporter_tag: conn.tag || 0,
-      reported_ip_hash: peer ? peer.iph : null,
+      reported_ip_hash: peer ? peer.iph : (target && room && target.tag ? (() => {
+        for (const c of room.members) { if (c.tag === target.tag) return c.iph; }
+        return null;
+      })() : null),
+      reported_tag: (target && target.tag) ? target.tag : (peer ? 0 : null),
       room_staff: room ? [...room.members].map(c => ({ tag: c.tag, iph: c.iph })) : [],
       reported_msg_id: msgId || null,
       reported_msg: target ? { tag: target.tag || 0, k: target.k, v: String(target.v || '').slice(0, 500), at: target.at } : null,
