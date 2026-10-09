@@ -22,6 +22,7 @@ const HALL_MAX = 500;              // 大厅软上限（防单实例被压垮）
 const HISTORY_TTL_MS = 3 * 24 * 3600 * 1000;  // 聊天记录保留 3 天
 const HISTORY_LIMIT = 100;         // 新人进群一次最多补 100 条
 const HISTORY_IMG_MAX = 2;         // 历史里最多重发 2 张图，更早的显示 [图片]
+const HISTORY_IMG_TTL_MS = 24 * 3600 * 1000;  // 图片只保留 1 天（比文字短）
 const STALE_MS = 240000;           // 超过这么久没动静视为僵尸（须 > 心跳间隔）
 const BLOCK_WORDS = ['http://', 'https://', 'www.'];  // 挡外链，防广告/钓鱼
 
@@ -238,13 +239,14 @@ const PAGE = `<!doctype html>
   .m{max-width:80%;padding:9px 13px;border-radius:16px;white-space:pre-wrap;word-break:break-word;font-size:15px}
   .me{align-self:flex-end;background:#2b5cff;color:#fff;border-bottom-right-radius:5px}
   .you{align-self:flex-start;background:#1b2030;border-bottom-left-radius:5px}
-  .who{display:block;font-size:11.5px;color:#7f8aa3;margin-bottom:2px}
+  .who{display:block;font-size:11.5px;color:#7f8aa3;margin-bottom:2px;padding-right:58px}
   .sys{align-self:center;font-size:12.5px;color:#6b7385;background:none;text-align:center;max-width:92%}
   .m{position:relative}
   .m img{display:block;max-width:100%;border-radius:10px;cursor:zoom-in}
-  .rbtn{position:absolute;top:-8px;right:-8px;display:block;width:24px;height:24px;min-height:24px;padding:0;
-        border-radius:50%;border:1px solid #3a4356;background:#232a3a;color:#aab3c5;font-size:12px;line-height:1;
-        cursor:pointer;opacity:.5}
+  .m{padding-top:12px}
+  .rbtn{position:absolute;top:3px;right:3px;display:block;height:19px;min-height:19px;padding:0 7px;line-height:17px;
+        border-radius:10px;border:1px solid rgba(255,255,255,.3);background:rgba(0,0,0,.32);color:#e8eaed;
+        font-size:11px;cursor:pointer;opacity:.9}
   .m:hover .rbtn{opacity:1;border-color:#2b5cff;background:#2b5cff;color:#fff}
   .mtip{font-size:11.5px;color:#5d6577;text-align:center}
   footer{padding:8px 10px calc(8px + env(safe-area-inset-bottom));border-top:1px solid #1d2230;
@@ -331,7 +333,7 @@ const STR = {
     err_process: '图片处理失败', err_toobig: '图片太大，换一张小点的', who: '陌生人 {n}',
     rep_q: '举报这条消息？管理员会看到这条内容和上下文。',
     rep_ask: '要举报某一条具体消息：手机长按那条消息、电脑把鼠标移到消息上点右上角 ⚑。先点「取消」，然后长按/悬停选具体那条。',
-    rep_title: '举报这条消息',
+    rep_title: '举报这条消息', rep_btn: '⚑ 举报',
   },
   en: {
     brand: 'anon chat', next: 'next ▸', langBtn: '中文',
@@ -354,7 +356,7 @@ const STR = {
     err_process: 'image processing failed', err_toobig: 'image too large, pick a smaller one', who: 'stranger {n}',
     rep_q: 'Report this message? The moderator will see it with its context.',
     rep_ask: 'To report one specific message: long-press it on mobile, or hover and click the ⚑ in the corner on desktop. Press Cancel, then pick that message.',
-    rep_title: 'report this message',
+    rep_title: 'report this message', rep_btn: '⚑ report',
   },
 };
 let LANG = (function () {
@@ -411,10 +413,10 @@ $('#go').addEventListener('click', () => {
 function el(cls, txt){ const d=document.createElement('div'); d.className='m '+cls; if(txt!==undefined) d.textContent=txt; log.appendChild(d); log.scrollTop=1e9; return d; }
 function sys(t){ el('sys', t); }
 function attachReport(el, id){
-  if (!id) return;
+  if (!id) id = 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   el.dataset.id = id;
   const b = document.createElement('button');
-  b.type = 'button'; b.className = 'rbtn'; b.title = '举报这条消息'; b.textContent = '⚑';
+  b.type = 'button'; b.className = 'rbtn'; b.title = T('rep_title'); b.textContent = T('rep_btn');
   b.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); askReport(id); });
   el.appendChild(b);
   let timer = null;
@@ -683,7 +685,11 @@ export default {
       if (!isAdmin) return new Response('forbidden', { status: 403 });
       return Response.redirect('https://' + url.host + '/admin?key=' + encodeURIComponent(adminKey), 302);
     }
-    return new Response(PAGE, { headers: { 'content-type': 'text/html;charset=utf-8' } });
+    return new Response(PAGE, { headers: {
+      'content-type': 'text/html;charset=utf-8',
+      'cache-control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'pragma': 'no-cache', 'expires': '0',
+    } });
   },
 };
 
@@ -863,10 +869,17 @@ export class Lobby {
       const cutoff = Date.now() - HISTORY_TTL_MS;
       const list = await this.state.storage.list({ prefix: 'm:', reverse: true, limit: HISTORY_LIMIT });
       const items = []; let imgs = 0;
+      const imgCutoff = Date.now() - HISTORY_IMG_TTL_MS;
       for (const [, v] of list) {
         if (!v || !v.at || v.at < cutoff) continue;
-        if (v.k === 'img') { if (++imgs <= HISTORY_IMG_MAX) items.push(v); else items.push({ from: v.from, k: 'imgph', at: v.at }); }
-        else items.push(v);
+        if (v.k === 'img') {
+          if (v.at >= imgCutoff && ++imgs <= HISTORY_IMG_MAX) items.push(v);
+          else items.push({ from: v.from, k: 'imgph', at: v.at });
+        } else items.push(v);
+      }
+      // 老记录没有 id（加 id 之前存的）→ 这里补上，否则历史消息永远没有举报按钮
+      for (const it of items) {
+        if (!it.id) it.id = 'h' + (it.at || Date.now());
       }
       if (items.length) this.send(conn, { t: 'history', items: items.reverse() });
     } catch {}
