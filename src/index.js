@@ -68,7 +68,9 @@ const ADMIN_PAGE = `<!doctype html>
   #bigimg img{max-width:100%;max-height:100%;border-radius:8px}
 </style></head>
 <body>
-<h1>匿名聊天 · 管理 <button id="rf" style="margin-left:auto">刷新</button></h1>
+<h1>匿名聊天 · 管理
+  <button id="chkey" style="margin-left:auto;font-size:12px;padding:6px 10px;min-height:34px">换密钥</button>
+  <button id="rf">刷新</button></h1>
 <div class="card"><div class="kv" id="kv"></div>
   <div class="row">
     <button id="reset" class="d">清场（踢掉所有连接）</button>
@@ -98,15 +100,29 @@ const ADMIN_PAGE = `<!doctype html>
 <h2 id="bh">封禁列表</h2>
 <div id="bans"></div>
 <script>
-var K = new URLSearchParams(location.search).get('key') || '';
+var K = (function () {
+  var u = new URLSearchParams(location.search).get('key');
+  if (u) { try { localStorage.setItem('anonchat:adminkey', u); } catch (e) {} 
+           try { history.replaceState(null, '', location.pathname); } catch (e) {}   // 从地址栏抹掉 key
+           return u; }
+  try { return localStorage.getItem('anonchat:adminkey') || ''; } catch (e) { return ''; }
+})();
+function askKey() {
+  var v = prompt('请输入管理密钥（只保存在本机浏览器里，不会出现在地址栏）');
+  if (v) { try { localStorage.setItem('anonchat:adminkey', v); } catch (e) {} location.reload(); }
+}
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
 function say(t){ document.getElementById('msg').textContent = t; setTimeout(function(){ document.getElementById('msg').textContent = ''; }, 4000); }
-async function api(p){ var r = await fetch('/admin/' + p + (p.indexOf('?') >= 0 ? '&' : '?') + 'key=' + encodeURIComponent(K)); if (!r.ok) throw new Error(r.status); return r.json(); }
+async function api(p){ var r = await fetch('/admin/' + p, { headers: { 'x-admin-key': K } }); if (!r.ok) throw new Error(r.status); return r.json(); }
 var OFFSET = 0, LIMIT = 20, Q = '';
 async function load(){
   var d;
   try { d = await api('data?offset=' + OFFSET + '&limit=' + LIMIT + '&q=' + encodeURIComponent(Q)); }
-  catch (e) { document.body.innerHTML = '<p style="padding:20px;color:#ffb4c0">密钥不对或已失效（HTTP ' + esc(e.message) + '）</p>'; return; }
+  catch (e) {
+    document.body.innerHTML = '<div style="padding:20px;color:#ffb4c0">密钥不对或已失效（HTTP ' + esc(e.message) + '）'
+      + '<div style="margin-top:12px"><button onclick="askKey()">输入 / 更换密钥</button></div></div>';
+    return;
+  }
   document.getElementById('kv').innerHTML =
       '<div><b>' + d.hall + '</b><span>大厅在线</span></div>'
     + '<div><b>' + d.queue + '</b><span>1v1 排队</span></div>'
@@ -213,7 +229,10 @@ document.getElementById('list').addEventListener('click', function(ev){
     var kk = si.getAttribute('data-showimg');
     var box = document.querySelector('.imgbox[data-imgbox="' + kk.replace(/"/g, '') + '"]');
     if (box) {
-      box.innerHTML = '<img class="repimg" src="/admin/image?key=' + encodeURIComponent(K) + '&k=' + encodeURIComponent(kk) + '&t=' + Date.now() + '" alt="reported image">';
+      fetch('/admin/image?k=' + encodeURIComponent(kk), { headers: { 'x-admin-key': K } })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.blob(); })
+        .then(function (b) { var u = URL.createObjectURL(b); box.innerHTML = '<img class="repimg" src="' + u + '" alt="reported image">'; })
+        .catch(function () { box.textContent = '取图失败'; });
       si.disabled = true; si.textContent = '🖼 已展开';
     }
     return;
@@ -236,6 +255,7 @@ document.getElementById('api-help').textContent = [
   '',
   '③ 数据 / 运维',
   '   GET /admin/data?key=<KEY>    # 统计 + 举报记录 + 封禁列表',
+  '   （管理页与所有 /admin/* 也支持请求头 x-admin-key: <KEY>，更安全）',
   '   GET /admin/reset?key=<KEY>   # 清场（踢掉所有在线连接）',
 ].join(String.fromCharCode(10));
 document.getElementById('bigimg').addEventListener('click', function(){ this.classList.remove('on'); document.getElementById('bigimgi').src = ''; });
@@ -259,6 +279,8 @@ document.getElementById('onlynew').addEventListener('change', function(){ OFFSET
   qi.addEventListener('keydown', function(e){ if (e.key === 'Enter') { clearTimeout(tm); Q = qi.value.trim(); OFFSET = 0; load(); } });
 })();
 document.getElementById('rf').onclick = load;
+document.getElementById('chkey').onclick = askKey;
+if (!K) askKey();
 document.getElementById('reset').onclick = async function(){ if (confirm('确定踢掉所有连接？')) { var r = await api('reset'); say('已清场，踢掉 ' + r.kicked + ' 人'); load(); } };
 document.getElementById('clr').onclick = async function(){ if (confirm('确定清空所有举报记录？')) { var r = await api('clearreports'); say('已清空 ' + r.deleted + ' 条'); load(); } };
 load();
@@ -808,11 +830,12 @@ export default {
     if (url.pathname === '/ws') {
       return env.LOBBY.get(env.LOBBY.idFromName(DO_NAME)).fetch(req);
     }
-    const adminKey = url.searchParams.get('key') || '';
+    // key 优先从请求头取（不再默认走 URL，避免进浏览器历史和日志）；URL 参数仅为兼容旧链接/机器人
+    const adminKey = req.headers.get('x-admin-key') || url.searchParams.get('key') || '';
     const isAdmin = !!env.ADMIN_KEY && adminKey === env.ADMIN_KEY;
+    const adminHeaders = { 'content-type': 'text/html;charset=utf-8', 'cache-control': 'no-store, no-cache, must-revalidate, max-age=0' };
     if (url.pathname === '/admin') {
-      if (!isAdmin) return new Response('forbidden', { status: 403 });
-      return new Response(ADMIN_PAGE, { headers: { 'content-type': 'text/html;charset=utf-8' } });
+      return new Response(ADMIN_PAGE, { headers: adminHeaders });   // 未登录也能拿到页面，页面自己弹输入框
     }
     // ---- 给外部机器人用的审核 API（同一个 ADMIN_KEY）----
     if (url.pathname === '/api/pending') {
@@ -1115,7 +1138,7 @@ export class Lobby3 {
       const bl = await this.state.storage.list({ prefix: 'ban:', limit: 500 });
       const bans = [...bl.values()].filter(b => b && b.until > Date.now()).sort((a, b) => (a.until < b.until ? 1 : -1));
       return new Response(JSON.stringify({
-        build: 'b20261009-2035', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
+        build: 'b20261009-2045', hall, queue: this.waiting ? 1 : 0, conns: this.pairs.size,
         retention_days: Math.round(HISTORY_TTL_MS / 86400000),
         reports: page, reports_total: filtered.length, reports_all: arr.length, offset: off, limit: lim, q,
         bans,
